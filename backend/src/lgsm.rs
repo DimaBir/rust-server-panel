@@ -151,6 +151,62 @@ pub async fn server_backup(
     lgsm_action(server_id, registry, "backup").await
 }
 
+pub async fn server_force_update(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "force-update").await
+}
+
+pub async fn server_validate(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "validate").await
+}
+
+pub async fn server_check_update(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "check-update").await
+}
+
+pub async fn server_monitor_check(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "monitor").await
+}
+
+pub async fn server_details(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "details").await
+}
+
+pub async fn server_update_lgsm(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "update-lgsm").await
+}
+
+pub async fn server_full_wipe(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "full-wipe").await
+}
+
+pub async fn server_map_wipe(
+    server_id: web::Path<String>,
+    registry: web::Data<Arc<ServerRegistry>>,
+) -> HttpResponse {
+    lgsm_action(server_id, registry, "map-wipe").await
+}
+
 /// POST /api/servers/{server_id}/save - RCON server.save
 pub async fn server_save(
     server_id: web::Path<String>,

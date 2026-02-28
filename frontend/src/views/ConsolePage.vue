@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useRoute } from 'vue-router'
+import { serverApi } from '../services/api'
 
 const route = useRoute()
 const serverId = computed(() => route.params.serverId as string)
@@ -25,6 +26,42 @@ const quickCommands = [
   { label: 'players', cmd: 'global.playerlist' },
   { label: 'save', cmd: 'server.save' },
 ]
+
+const serverCommands = [
+  { label: 'Start', endpoint: '/start' },
+  { label: 'Stop', endpoint: '/stop' },
+  { label: 'Restart', endpoint: '/restart' },
+  { label: 'Update', endpoint: '/update' },
+  { label: 'Force Update', endpoint: '/force-update' },
+  { label: 'Validate', endpoint: '/validate' },
+  { label: 'Check Update', endpoint: '/check-update' },
+  { label: 'Backup', endpoint: '/backup' },
+  { label: 'Monitor', endpoint: '/monitor-check' },
+  { label: 'Details', endpoint: '/details' },
+  { label: 'Update LGSM', endpoint: '/update-lgsm' },
+  { label: 'Map Wipe', endpoint: '/map-wipe' },
+  { label: 'Full Wipe', endpoint: '/full-wipe' },
+]
+
+const runningCommand = ref<string | null>(null)
+
+async function runServerCommand(cmd: typeof serverCommands[0]) {
+  if (runningCommand.value) return
+  runningCommand.value = cmd.endpoint
+  terminal?.writeln(`\x1b[1;36m[LGSM] ${cmd.label}...\x1b[0m`)
+  try {
+    const sApi = serverApi(serverId.value)
+    const res = await sApi.post<{ success: boolean; output: string }>(cmd.endpoint)
+    const color = res.data.success ? '32' : '31'
+    for (const line of res.data.output.split('\n')) {
+      terminal?.writeln(`\x1b[${color}m${line}\x1b[0m`)
+    }
+  } catch (e: any) {
+    terminal?.writeln(`\x1b[31m[ERROR] ${e.message || 'Command failed'}\x1b[0m`)
+  } finally {
+    runningCommand.value = null
+  }
+}
 
 function initTerminal() {
   if (!terminalRef.value) return
@@ -175,6 +212,22 @@ onUnmounted(() => {
         @click="clearTerminal"
       >
         Clear
+      </v-btn>
+    </div>
+
+    <div class="d-flex align-center flex-wrap ga-1 mb-2">
+      <span class="text-caption text-medium-emphasis mr-2">Server:</span>
+      <v-btn
+        v-for="cmd in serverCommands"
+        :key="cmd.endpoint"
+        size="x-small"
+        variant="tonal"
+        :color="cmd.endpoint.includes('wipe') ? 'error' : 'secondary'"
+        :loading="runningCommand === cmd.endpoint"
+        :disabled="runningCommand !== null"
+        @click="runServerCommand(cmd)"
+      >
+        {{ cmd.label }}
       </v-btn>
     </div>
 

@@ -93,7 +93,12 @@ async fn main() -> anyhow::Result<()> {
         {
             let rcon = rcon_client.clone();
             match rcon.connect().await {
-                Ok(()) => tracing::info!("RCON connected for server '{}'", def.id),
+                Ok(()) => {
+                    tracing::info!("RCON connected for server '{}'", def.id);
+                    if let Err(e) = rcon.execute("server.globalchat false").await {
+                        tracing::warn!("Failed to disable globalchat for '{}': {}", def.id, e);
+                    }
+                }
                 Err(e) => tracing::warn!(
                     "RCON connection failed for '{}' (will retry on demand): {}",
                     def.id,
@@ -212,11 +217,22 @@ async fn main() -> anyhow::Result<()> {
                     .route("/backup", web::post().to(lgsm::server_backup))
                     .route("/save", web::post().to(lgsm::server_save))
                     .route("/wipe", web::post().to(lgsm::server_wipe))
+                    .route("/force-update", web::post().to(lgsm::server_force_update))
+                    .route("/validate", web::post().to(lgsm::server_validate))
+                    .route("/check-update", web::post().to(lgsm::server_check_update))
+                    .route("/monitor-check", web::post().to(lgsm::server_monitor_check))
+                    .route("/details", web::post().to(lgsm::server_details))
+                    .route("/update-lgsm", web::post().to(lgsm::server_update_lgsm))
+                    .route("/full-wipe", web::post().to(lgsm::server_full_wipe))
+                    .route("/map-wipe", web::post().to(lgsm::server_map_wipe))
                     // Players
                     .route("/players", web::get().to(players::list_players))
                     .route("/players/kick", web::post().to(players::kick_player))
                     .route("/players/ban", web::post().to(players::ban_player))
                     .route("/players/unban", web::post().to(players::unban_player))
+                    .route("/players/moderator", web::post().to(players::add_moderator))
+                    .route("/players/remove-moderator", web::post().to(players::remove_moderator))
+                    .route("/players/give", web::post().to(players::give_item))
                     // Game monitor
                     .route(
                         "/monitor/game",

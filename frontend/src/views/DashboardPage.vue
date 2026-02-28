@@ -86,12 +86,40 @@ const quickActions = [
   { label: 'Start', icon: 'mdi-play', endpoint: '/start' },
   { label: 'Stop', icon: 'mdi-stop', endpoint: '/stop' },
   { label: 'Restart', icon: 'mdi-restart', endpoint: '/restart' },
-  { label: 'Update', icon: 'mdi-download', endpoint: '/update' },
   { label: 'Save', icon: 'mdi-content-save', endpoint: '/save' },
-  { label: 'Backup', icon: 'mdi-backup-restore', endpoint: '/backup' },
 ]
 
-function handleQuickAction(action: typeof quickActions[0]) {
+const moreActionGroups = [
+  {
+    title: 'Updates',
+    actions: [
+      { label: 'Update', endpoint: '/update', icon: 'mdi-download' },
+      { label: 'Force Update', endpoint: '/force-update', icon: 'mdi-download-lock' },
+      { label: 'Check Update', endpoint: '/check-update', icon: 'mdi-update' },
+      { label: 'Validate', endpoint: '/validate', icon: 'mdi-check-decagram' },
+    ],
+  },
+  {
+    title: 'Maintenance',
+    actions: [
+      { label: 'Backup', endpoint: '/backup', icon: 'mdi-backup-restore' },
+      { label: 'Monitor Check', endpoint: '/monitor-check', icon: 'mdi-heart-pulse' },
+      { label: 'Details', endpoint: '/details', icon: 'mdi-information' },
+      { label: 'Update LGSM', endpoint: '/update-lgsm', icon: 'mdi-cog-refresh' },
+    ],
+  },
+  {
+    title: 'Wipes',
+    actions: [
+      { label: 'Map Wipe', endpoint: '/map-wipe', icon: 'mdi-map-marker-remove', destructive: true },
+      { label: 'Full Wipe', endpoint: '/full-wipe', icon: 'mdi-delete-forever', destructive: true },
+    ],
+  },
+]
+
+const moreMenu = ref(false)
+
+function handleQuickAction(action: { label: string; endpoint: string }) {
   showConfirm(
     action.label,
     `Are you sure you want to ${action.label.toLowerCase()} the server?`,
@@ -102,6 +130,19 @@ function handleQuickAction(action: typeof quickActions[0]) {
       } catch { /* interceptor */ }
     }
   )
+}
+
+function handleMoreAction(action: { label: string; endpoint: string; destructive?: boolean }) {
+  const msg = action.destructive
+    ? `WARNING: This will ${action.label.toLowerCase()} the server. This cannot be undone. Continue?`
+    : `Are you sure you want to ${action.label.toLowerCase()}?`
+  showConfirm(action.label, msg, async () => {
+    try {
+      const sApi = serverApi(serverId.value)
+      await sApi.post(action.endpoint)
+    } catch { /* interceptor */ }
+  })
+  moreMenu.value = false
 }
 
 function formatUptime(seconds: number): string {
@@ -289,6 +330,33 @@ onUnmounted(() => {
                   />
                 </template>
               </v-tooltip>
+
+              <v-menu v-model="moreMenu" :close-on-content-click="false" location="bottom end">
+                <template #activator="{ props }">
+                  <v-btn
+                    v-bind="props"
+                    icon="mdi-dots-horizontal"
+                    size="small"
+                    variant="tonal"
+                    color="default"
+                  />
+                </template>
+                <v-card min-width="220">
+                  <template v-for="group in moreActionGroups" :key="group.title">
+                    <v-card-subtitle class="text-uppercase text-caption pt-3 pb-1">{{ group.title }}</v-card-subtitle>
+                    <v-list density="compact" class="py-0">
+                      <v-list-item
+                        v-for="action in group.actions"
+                        :key="action.label"
+                        :prepend-icon="action.icon"
+                        :title="action.label"
+                        :class="('destructive' in action && action.destructive) ? 'text-error' : ''"
+                        @click="handleMoreAction(action)"
+                      />
+                    </v-list>
+                  </template>
+                </v-card>
+              </v-menu>
             </div>
           </v-card>
         </v-col>
