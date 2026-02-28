@@ -53,14 +53,24 @@ pub async fn get_map_info(
         }
     };
 
+    // Try to get live seed/worldSize from RCON serverinfo
+    let (seed, world_size) = if let Some(rcon) = registry.get_rcon(&server_id).await {
+        match rcon.server_info().await {
+            Ok(info) if info.seed > 0 => (info.seed, if info.world_size > 0 { info.world_size } else { def.world_size }),
+            _ => (def.seed, def.world_size),
+        }
+    } else {
+        (def.seed, def.world_size)
+    };
+
     let image_url = format!(
         "https://content.rustmaps.com/maps/{}_{}/map_icons.png",
-        def.world_size, def.seed
+        world_size, seed
     );
 
     HttpResponse::Ok().json(serde_json::json!({
-        "seed": def.seed,
-        "worldSize": def.world_size,
+        "seed": seed,
+        "worldSize": world_size,
         "imageUrl": image_url,
     }))
 }

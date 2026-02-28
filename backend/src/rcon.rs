@@ -57,6 +57,10 @@ pub struct ServerInfo {
     pub game_time: String,
     #[serde(default, alias = "SaveCreatedTime")]
     pub save_created_time: String,
+    #[serde(default, alias = "Seed")]
+    pub seed: u32,
+    #[serde(default, alias = "WorldSize")]
+    pub world_size: u32,
 }
 
 /// Parsed player entry from the "playerlist" RCON command.
