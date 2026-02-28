@@ -55,9 +55,10 @@ function initTerminal() {
 
 function connectWebSocket() {
   const token = localStorage.getItem('jwt_token')
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const url = token
-    ? `ws://localhost:8443/ws/console?token=${token}`
-    : 'ws://localhost:8443/ws/console'
+    ? `${wsProtocol}//${window.location.host}/ws/console?token=${token}`
+    : `${wsProtocol}//${window.location.host}/ws/console`
 
   ws = new WebSocket(url)
 
