@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
-import api from '../services/api'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { serverApi } from '../services/api'
+import { useServerStore } from '../stores/server'
 import type { Player } from '../types'
 
-const tab = ref('online')
+const serverStore = useServerStore()
 const players = ref<Player[]>([])
-const bannedPlayers = ref<{ steamId: string; reason: string }[]>([])
 const loading = ref(true)
 const search = ref('')
 
@@ -16,18 +16,14 @@ const actionReason = ref('')
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+const activeServerId = computed(() => serverStore.activeServerId ?? '')
+
 const onlineHeaders = [
   { title: 'Name', key: 'displayName' },
   { title: 'Steam ID', key: 'steamId' },
   { title: 'Ping', key: 'ping' },
   { title: 'Health', key: 'health' },
   { title: 'Connected', key: 'connectedSeconds' },
-  { title: 'Actions', key: 'actions', sortable: false },
-]
-
-const banHeaders = [
-  { title: 'Steam ID', key: 'steamId' },
-  { title: 'Reason', key: 'reason' },
   { title: 'Actions', key: 'actions', sortable: false },
 ]
 
@@ -40,22 +36,15 @@ const filteredPlayers = computed(() => {
 })
 
 async function fetchPlayers() {
+  if (!activeServerId.value) return
   try {
-    const res = await api.get<{ players: Player[] }>('/monitor/game')
+    const api = serverApi(activeServerId.value)
+    const res = await api.get<{ players: Player[] }>('/players')
     players.value = res.data.players ?? []
   } catch {
-    // Silent poll error
+    // Silent poll
   } finally {
     loading.value = false
-  }
-}
-
-async function fetchBans() {
-  try {
-    const res = await api.get<{ bans: { steamId: string; reason: string }[] }>('/players/bans')
-    bannedPlayers.value = res.data.bans ?? []
-  } catch {
-    // Silent error
   }
 }
 
@@ -74,39 +63,27 @@ function openBan(player: Player) {
 async function confirmKick() {
   if (!selectedPlayer.value) return
   try {
+    const api = serverApi(activeServerId.value)
     await api.post('/players/kick', {
       steamId: selectedPlayer.value.steamId,
       reason: actionReason.value || 'Kicked by admin',
     })
     kickDialog.value = false
     await fetchPlayers()
-  } catch {
-    // Error handled by interceptor
-  }
+  } catch { /* interceptor */ }
 }
 
 async function confirmBan() {
   if (!selectedPlayer.value) return
   try {
+    const api = serverApi(activeServerId.value)
     await api.post('/players/ban', {
       steamId: selectedPlayer.value.steamId,
       reason: actionReason.value || 'Banned by admin',
     })
     banDialog.value = false
     await fetchPlayers()
-    await fetchBans()
-  } catch {
-    // Error handled by interceptor
-  }
-}
-
-async function unban(steamId: string) {
-  try {
-    await api.post('/players/unban', { steamId })
-    await fetchBans()
-  } catch {
-    // Error handled by interceptor
-  }
+  } catch { /* interceptor */ }
 }
 
 function formatTime(seconds: number): string {
@@ -116,9 +93,13 @@ function formatTime(seconds: number): string {
   return `${m}m`
 }
 
+watch(() => serverStore.activeServerId, () => {
+  loading.value = true
+  fetchPlayers()
+})
+
 onMounted(() => {
   fetchPlayers()
-  fetchBans()
   pollTimer = setInterval(fetchPlayers, 10000)
 })
 
@@ -129,126 +110,59 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <div class="text-h5 font-weight-bold mb-4">Player Management</div>
+    <div class="text-h6 font-weight-medium mb-4" style="color: #e2e8f0;">Player Management</div>
 
-    <v-tabs v-model="tab" color="primary" class="mb-4">
-      <v-tab value="online">
-        Online Players
-        <v-chip size="x-small" class="ml-2" color="success">{{ players.length }}</v-chip>
-      </v-tab>
-      <v-tab value="bans">
-        Ban List
-        <v-chip size="x-small" class="ml-2" color="error">{{ bannedPlayers.length }}</v-chip>
-      </v-tab>
-    </v-tabs>
+    <v-card>
+      <v-card-text>
+        <v-text-field
+          v-model="search"
+          prepend-inner-icon="mdi-magnify"
+          label="Search players..."
+          hide-details
+          class="mb-4"
+        />
 
-    <v-window v-model="tab">
-      <!-- Online Players -->
-      <v-window-item value="online">
-        <v-card>
-          <v-card-text>
-            <v-text-field
-              v-model="search"
-              prepend-inner-icon="mdi-magnify"
-              label="Search players..."
-              hide-details
-              class="mb-4"
-            />
-
-            <v-data-table
-              :headers="onlineHeaders"
-              :items="filteredPlayers"
-              :loading="loading"
-              item-key="steamId"
-              class="elevation-0"
-              density="comfortable"
+        <v-data-table
+          :headers="onlineHeaders"
+          :items="filteredPlayers"
+          :loading="loading"
+          item-key="steamId"
+          class="elevation-0"
+          density="comfortable"
+        >
+          <template #item.health="{ item }">
+            <v-chip
+              :color="item.health > 50 ? 'success' : item.health > 20 ? 'warning' : 'error'"
+              size="small"
+              variant="tonal"
             >
-              <template #item.health="{ item }">
-                <v-chip
-                  :color="item.health > 50 ? 'success' : item.health > 20 ? 'warning' : 'error'"
-                  size="small"
-                >
-                  {{ item.health.toFixed(0) }}
-                </v-chip>
-              </template>
-              <template #item.ping="{ item }">
-                <v-chip
-                  :color="item.ping < 50 ? 'success' : item.ping < 100 ? 'warning' : 'error'"
-                  size="small"
-                >
-                  {{ item.ping }}ms
-                </v-chip>
-              </template>
-              <template #item.connectedSeconds="{ item }">
-                {{ formatTime(item.connectedSeconds) }}
-              </template>
-              <template #item.actions="{ item }">
-                <v-btn
-                  icon="mdi-account-remove"
-                  size="small"
-                  variant="text"
-                  color="warning"
-                  title="Kick"
-                  @click="openKick(item)"
-                />
-                <v-btn
-                  icon="mdi-cancel"
-                  size="small"
-                  variant="text"
-                  color="error"
-                  title="Ban"
-                  @click="openBan(item)"
-                />
-              </template>
-              <template #no-data>
-                <div class="text-center pa-4 text-grey">No players online</div>
-              </template>
-            </v-data-table>
-          </v-card-text>
-        </v-card>
-      </v-window-item>
-
-      <!-- Ban List -->
-      <v-window-item value="bans">
-        <v-card>
-          <v-card-text>
-            <v-data-table
-              :headers="banHeaders"
-              :items="bannedPlayers"
-              item-key="steamId"
-              class="elevation-0"
-              density="comfortable"
-            >
-              <template #item.actions="{ item }">
-                <v-btn
-                  size="small"
-                  variant="tonal"
-                  color="success"
-                  @click="unban(item.steamId)"
-                >
-                  Unban
-                </v-btn>
-              </template>
-              <template #no-data>
-                <div class="text-center pa-4 text-grey">No banned players</div>
-              </template>
-            </v-data-table>
-          </v-card-text>
-        </v-card>
-      </v-window-item>
-    </v-window>
+              {{ item.health.toFixed(0) }}
+            </v-chip>
+          </template>
+          <template #item.ping="{ item }">
+            <span class="text-medium-emphasis">{{ item.ping }}ms</span>
+          </template>
+          <template #item.connectedSeconds="{ item }">
+            <span class="text-medium-emphasis">{{ formatTime(item.connectedSeconds) }}</span>
+          </template>
+          <template #item.actions="{ item }">
+            <v-btn icon="mdi-account-remove" size="small" variant="text" color="warning" @click="openKick(item)" />
+            <v-btn icon="mdi-cancel" size="small" variant="text" color="error" @click="openBan(item)" />
+          </template>
+          <template #no-data>
+            <div class="text-center pa-8 text-medium-emphasis">No players online</div>
+          </template>
+        </v-data-table>
+      </v-card-text>
+    </v-card>
 
     <!-- Kick Dialog -->
     <v-dialog v-model="kickDialog" max-width="450">
       <v-card>
-        <v-card-title>Kick Player</v-card-title>
+        <v-card-title class="text-h6 font-weight-medium">Kick Player</v-card-title>
         <v-card-text>
           <p class="mb-3">Kick <strong>{{ selectedPlayer?.displayName }}</strong>?</p>
-          <v-text-field
-            v-model="actionReason"
-            label="Reason (optional)"
-            hide-details
-          />
+          <v-text-field v-model="actionReason" label="Reason (optional)" hide-details />
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -261,14 +175,10 @@ onUnmounted(() => {
     <!-- Ban Dialog -->
     <v-dialog v-model="banDialog" max-width="450">
       <v-card>
-        <v-card-title>Ban Player</v-card-title>
+        <v-card-title class="text-h6 font-weight-medium">Ban Player</v-card-title>
         <v-card-text>
           <p class="mb-3">Ban <strong>{{ selectedPlayer?.displayName }}</strong>?</p>
-          <v-text-field
-            v-model="actionReason"
-            label="Reason (optional)"
-            hide-details
-          />
+          <v-text-field v-model="actionReason" label="Reason (optional)" hide-details />
         </v-card-text>
         <v-card-actions>
           <v-spacer />

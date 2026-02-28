@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -12,13 +12,15 @@ import {
   Legend,
   Filler,
 } from 'chart.js'
+import { serverApi } from '../services/api'
 import api from '../services/api'
-import type { ServerInfo, SystemStats, GameStats } from '../types'
+import { useServerStore } from '../stores/server'
+import type { ServerInfo, SystemStats, GameStats, MonitorResponse } from '../types'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler)
 
+const serverStore = useServerStore()
 const serverInfo = ref<ServerInfo | null>(null)
-const systemStats = ref<SystemStats | null>(null)
 const loading = ref(true)
 const confirmDialog = ref(false)
 const confirmAction = ref<{ title: string; text: string; action: () => void } | null>(null)
@@ -32,37 +34,54 @@ const MAX_HISTORY = 30
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+const activeServerId = computed(() => serverStore.activeServerId ?? '')
+
 async function fetchData() {
+  if (!activeServerId.value) return
+  const sApi = serverApi(activeServerId.value)
   try {
     const [statusRes, systemRes, gameRes] = await Promise.allSettled([
-      api.get<ServerInfo>('/server/status'),
-      api.get<SystemStats>('/monitor/system'),
-      api.get<GameStats>('/monitor/game'),
+      sApi.get<ServerInfo>('/status'),
+      api.get<MonitorResponse<SystemStats>>('/monitor/system'),
+      sApi.get<MonitorResponse<GameStats>>('/monitor/game'),
     ])
 
     if (statusRes.status === 'fulfilled') {
       serverInfo.value = statusRes.value.data
     }
     if (systemRes.status === 'fulfilled') {
-      systemStats.value = systemRes.value.data
-      cpuHistory.value.push(systemRes.value.data.cpuPercent)
-      memHistory.value.push(systemRes.value.data.memPercent)
-      if (cpuHistory.value.length > MAX_HISTORY) cpuHistory.value.shift()
-      if (memHistory.value.length > MAX_HISTORY) memHistory.value.shift()
+      const current = systemRes.value.data.current
+      if (current) {
+        cpuHistory.value.push(current.cpuPercent)
+        memHistory.value.push(current.memPercent)
+        if (cpuHistory.value.length > MAX_HISTORY) cpuHistory.value.shift()
+        if (memHistory.value.length > MAX_HISTORY) memHistory.value.shift()
+      }
     }
     if (gameRes.status === 'fulfilled') {
-      playerHistory.value.push(gameRes.value.data.players)
-      if (playerHistory.value.length > MAX_HISTORY) playerHistory.value.shift()
+      const current = gameRes.value.data.current
+      if (current) {
+        playerHistory.value.push(current.players)
+        if (playerHistory.value.length > MAX_HISTORY) playerHistory.value.shift()
+      }
     }
 
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     timeLabels.value.push(now)
     if (timeLabels.value.length > MAX_HISTORY) timeLabels.value.shift()
   } catch {
-    // Errors handled silently for dashboard polling
+    // Silent poll
   } finally {
     loading.value = false
   }
+}
+
+function resetHistory() {
+  cpuHistory.value = []
+  memHistory.value = []
+  playerHistory.value = []
+  timeLabels.value = []
+  loading.value = true
 }
 
 function showConfirm(title: string, text: string, action: () => void) {
@@ -71,20 +90,17 @@ function showConfirm(title: string, text: string, action: () => void) {
 }
 
 async function executeConfirm() {
-  if (confirmAction.value) {
-    confirmAction.value.action()
-  }
+  if (confirmAction.value) confirmAction.value.action()
   confirmDialog.value = false
 }
 
 const quickActions = [
-  { label: 'Start', icon: 'mdi-play', color: 'success', endpoint: '/server/start' },
-  { label: 'Stop', icon: 'mdi-stop', color: 'error', endpoint: '/server/stop' },
-  { label: 'Restart', icon: 'mdi-restart', color: 'warning', endpoint: '/server/restart' },
-  { label: 'Update', icon: 'mdi-download', color: 'info', endpoint: '/server/update' },
-  { label: 'Save', icon: 'mdi-content-save', color: 'success', endpoint: '/server/save' },
-  { label: 'Wipe Map', icon: 'mdi-map-marker-off', color: 'warning', endpoint: '/server/wipe/map' },
-  { label: 'Full Wipe', icon: 'mdi-delete-forever', color: 'error', endpoint: '/server/wipe/full' },
+  { label: 'Start', icon: 'mdi-play', endpoint: '/start' },
+  { label: 'Stop', icon: 'mdi-stop', endpoint: '/stop' },
+  { label: 'Restart', icon: 'mdi-restart', endpoint: '/restart' },
+  { label: 'Update', icon: 'mdi-download', endpoint: '/update' },
+  { label: 'Save', icon: 'mdi-content-save', endpoint: '/save' },
+  { label: 'Backup', icon: 'mdi-backup-restore', endpoint: '/backup' },
 ]
 
 function handleQuickAction(action: typeof quickActions[0]) {
@@ -92,7 +108,10 @@ function handleQuickAction(action: typeof quickActions[0]) {
     action.label,
     `Are you sure you want to ${action.label.toLowerCase()} the server?`,
     async () => {
-      try { await api.post(action.endpoint) } catch { /* interceptor handles */ }
+      try {
+        const sApi = serverApi(activeServerId.value)
+        await sApi.post(action.endpoint)
+      } catch { /* interceptor */ }
     }
   )
 }
@@ -103,7 +122,8 @@ function formatUptime(seconds: number): string {
   return `${h}h ${m}m`
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | undefined): string {
+  if (bytes == null || isNaN(bytes)) return '—'
   if (bytes < 1024) return bytes + ' B'
   const gb = bytes / (1024 * 1024 * 1024)
   if (gb >= 1) return gb.toFixed(1) + ' GB'
@@ -117,18 +137,22 @@ const systemChartData = computed(() => ({
     {
       label: 'CPU %',
       data: cpuHistory.value,
-      borderColor: '#CD412B',
-      backgroundColor: 'rgba(205, 65, 43, 0.1)',
+      borderColor: '#3b82f6',
+      backgroundColor: 'rgba(59, 130, 246, 0.08)',
       fill: true,
-      tension: 0.3,
+      tension: 0.4,
+      borderWidth: 2,
+      pointRadius: 0,
     },
     {
       label: 'Memory %',
       data: memHistory.value,
-      borderColor: '#4FC3F7',
-      backgroundColor: 'rgba(79, 195, 247, 0.1)',
+      borderColor: '#10b981',
+      backgroundColor: 'rgba(16, 185, 129, 0.08)',
       fill: true,
-      tension: 0.3,
+      tension: 0.4,
+      borderWidth: 2,
+      pointRadius: 0,
     },
   ],
 }))
@@ -139,10 +163,12 @@ const playerChartData = computed(() => ({
     {
       label: 'Players',
       data: playerHistory.value,
-      borderColor: '#66BB6A',
-      backgroundColor: 'rgba(102, 187, 106, 0.1)',
+      borderColor: '#f59e0b',
+      backgroundColor: 'rgba(245, 158, 11, 0.08)',
       fill: true,
-      tension: 0.3,
+      tension: 0.4,
+      borderWidth: 2,
+      pointRadius: 0,
     },
   ],
 }))
@@ -152,21 +178,26 @@ const chartOptions = {
   maintainAspectRatio: false,
   plugins: {
     legend: {
-      labels: { color: '#E0E0E0' },
+      labels: { color: '#94a3b8', font: { size: 11 } },
     },
   },
   scales: {
     x: {
-      ticks: { color: '#999', maxTicksLimit: 8 },
-      grid: { color: 'rgba(255,255,255,0.05)' },
+      ticks: { color: '#475569', maxTicksLimit: 6, font: { size: 10 } },
+      grid: { color: 'rgba(255,255,255,0.03)' },
     },
     y: {
-      ticks: { color: '#999' },
-      grid: { color: 'rgba(255,255,255,0.05)' },
+      ticks: { color: '#475569', font: { size: 10 } },
+      grid: { color: 'rgba(255,255,255,0.03)' },
       min: 0,
     },
   },
 }
+
+watch(() => serverStore.activeServerId, () => {
+  resetHistory()
+  fetchData()
+})
 
 onMounted(() => {
   fetchData()
@@ -180,7 +211,7 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <div class="text-h5 font-weight-bold mb-4">Dashboard</div>
+    <div class="text-h6 font-weight-medium mb-5" style="color: #e2e8f0;">Dashboard</div>
 
     <v-row v-if="loading">
       <v-col cols="12" class="text-center py-12">
@@ -189,122 +220,92 @@ onUnmounted(() => {
     </v-row>
 
     <template v-else>
-      <!-- Server Status -->
-      <v-row>
-        <v-col cols="12" md="8">
-          <v-card>
-            <v-card-title class="d-flex align-center">
-              <v-icon class="mr-2">mdi-server</v-icon>
-              Server Status
-              <v-spacer />
-              <v-chip
-                :color="serverInfo?.online ? 'success' : 'error'"
-                size="small"
-                variant="flat"
-              >
-                {{ serverInfo?.online ? 'ONLINE' : 'OFFLINE' }}
-              </v-chip>
-            </v-card-title>
-            <v-card-text>
-              <v-row dense>
-                <v-col cols="6" sm="4">
-                  <div class="text-caption text-grey">Hostname</div>
-                  <div class="text-body-2">{{ serverInfo?.hostname ?? 'N/A' }}</div>
-                </v-col>
-                <v-col cols="6" sm="4">
-                  <div class="text-caption text-grey">Map</div>
-                  <div class="text-body-2">{{ serverInfo?.map ?? 'N/A' }}</div>
-                </v-col>
-                <v-col cols="6" sm="4">
-                  <div class="text-caption text-grey">Players</div>
-                  <div class="text-body-2">{{ serverInfo?.players ?? 0 }} / {{ serverInfo?.maxPlayers ?? 0 }}</div>
-                </v-col>
-                <v-col cols="6" sm="4">
-                  <div class="text-caption text-grey">FPS</div>
-                  <div class="text-body-2">{{ serverInfo?.fps ?? 0 }}</div>
-                </v-col>
-                <v-col cols="6" sm="4">
-                  <div class="text-caption text-grey">Entities</div>
-                  <div class="text-body-2">{{ serverInfo?.entities ?? 0 }}</div>
-                </v-col>
-                <v-col cols="6" sm="4">
-                  <div class="text-caption text-grey">Uptime</div>
-                  <div class="text-body-2">{{ serverInfo?.uptime ? formatUptime(serverInfo.uptime) : 'N/A' }}</div>
-                </v-col>
-              </v-row>
-            </v-card-text>
+      <!-- Stat Cards -->
+      <v-row class="mb-2">
+        <v-col cols="6" md="3">
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-1">Players</div>
+            <div class="text-h4 font-weight-medium" style="color: #e2e8f0;">
+              {{ serverInfo?.online ? serverInfo.players : '—' }}
+            </div>
+            <div class="text-caption text-medium-emphasis" v-if="serverInfo?.online">
+              of {{ serverInfo.maxPlayers }}
+            </div>
+            <div class="text-caption text-medium-emphasis" v-else>Offline</div>
           </v-card>
         </v-col>
-
-        <v-col cols="12" md="4">
-          <v-card class="fill-height">
-            <v-card-title>
-              <v-icon class="mr-2">mdi-lightning-bolt</v-icon>
-              Quick Actions
-            </v-card-title>
-            <v-card-text>
-              <div class="d-flex flex-wrap ga-2">
-                <v-btn
-                  v-for="action in quickActions"
-                  :key="action.label"
-                  :color="action.color"
-                  :prepend-icon="action.icon"
-                  size="small"
-                  variant="tonal"
-                  @click="handleQuickAction(action)"
-                >
-                  {{ action.label }}
-                </v-btn>
-              </div>
-            </v-card-text>
+        <v-col cols="6" md="3">
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-1">CPU</div>
+            <div class="text-h4 font-weight-medium" style="color: #e2e8f0;">
+              {{ serverInfo?.cpuPercent != null ? serverInfo.cpuPercent.toFixed(0) + '%' : '—' }}
+            </div>
+            <div class="text-caption text-medium-emphasis">Usage</div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="3">
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-1">Memory</div>
+            <div class="text-h4 font-weight-medium" style="color: #e2e8f0;">
+              {{ serverInfo?.memPercent != null ? serverInfo.memPercent.toFixed(0) + '%' : '—' }}
+            </div>
+            <div class="text-caption text-medium-emphasis">
+              {{ formatBytes(serverInfo?.memUsed) }} / {{ formatBytes(serverInfo?.memTotal) }}
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="3">
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-1">FPS</div>
+            <div class="text-h4 font-weight-medium" style="color: #e2e8f0;">
+              {{ serverInfo?.online ? serverInfo.fps?.toFixed(0) ?? '—' : '—' }}
+            </div>
+            <div class="text-caption text-medium-emphasis" v-if="serverInfo?.online">
+              {{ serverInfo.entities?.toLocaleString() ?? 0 }} entities
+            </div>
+            <div class="text-caption text-medium-emphasis" v-else>Offline</div>
           </v-card>
         </v-col>
       </v-row>
 
-      <!-- System Stats -->
-      <v-row class="mt-2">
-        <v-col cols="12" sm="4">
-          <v-card class="text-center pa-4">
-            <v-progress-circular
-              :model-value="systemStats?.cpuPercent ?? 0"
-              :size="80"
-              :width="8"
-              color="primary"
-            >
-              {{ (systemStats?.cpuPercent ?? 0).toFixed(0) }}%
-            </v-progress-circular>
-            <div class="text-body-1 mt-2">CPU Usage</div>
+      <!-- Server Info Strip + Quick Actions -->
+      <v-row>
+        <v-col cols="12" md="8">
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-3">Server Info</div>
+            <v-row dense>
+              <v-col cols="6" sm="4">
+                <div class="text-caption text-medium-emphasis">Hostname</div>
+                <div class="text-body-2" style="color: #e2e8f0;">{{ serverInfo?.hostname || '—' }}</div>
+              </v-col>
+              <v-col cols="6" sm="4">
+                <div class="text-caption text-medium-emphasis">Map</div>
+                <div class="text-body-2" style="color: #e2e8f0;">{{ serverInfo?.map || '—' }}</div>
+              </v-col>
+              <v-col cols="6" sm="4">
+                <div class="text-caption text-medium-emphasis">Uptime</div>
+                <div class="text-body-2" style="color: #e2e8f0;">{{ serverInfo?.uptime ? formatUptime(serverInfo.uptime) : '—' }}</div>
+              </v-col>
+            </v-row>
           </v-card>
         </v-col>
-        <v-col cols="12" sm="4">
-          <v-card class="text-center pa-4">
-            <v-progress-circular
-              :model-value="systemStats?.memPercent ?? 0"
-              :size="80"
-              :width="8"
-              color="info"
-            >
-              {{ (systemStats?.memPercent ?? 0).toFixed(0) }}%
-            </v-progress-circular>
-            <div class="text-body-1 mt-2">Memory</div>
-            <div class="text-caption text-grey">
-              {{ systemStats ? formatBytes(systemStats.memUsed) : '0' }} / {{ systemStats ? formatBytes(systemStats.memTotal) : '0' }}
-            </div>
-          </v-card>
-        </v-col>
-        <v-col cols="12" sm="4">
-          <v-card class="text-center pa-4">
-            <v-progress-circular
-              :model-value="systemStats?.diskPercent ?? 0"
-              :size="80"
-              :width="8"
-              color="warning"
-            >
-              {{ (systemStats?.diskPercent ?? 0).toFixed(0) }}%
-            </v-progress-circular>
-            <div class="text-body-1 mt-2">Disk</div>
-            <div class="text-caption text-grey">
-              {{ systemStats ? formatBytes(systemStats.diskUsed) : '0' }} / {{ systemStats ? formatBytes(systemStats.diskTotal) : '0' }}
+
+        <v-col cols="12" md="4">
+          <v-card class="pa-4 fill-height">
+            <div class="text-caption text-medium-emphasis mb-3">Quick Actions</div>
+            <div class="d-flex flex-wrap ga-2">
+              <v-tooltip v-for="action in quickActions" :key="action.label" :text="action.label" location="top">
+                <template #activator="{ props }">
+                  <v-btn
+                    v-bind="props"
+                    :icon="action.icon"
+                    size="small"
+                    variant="tonal"
+                    color="primary"
+                    @click="handleQuickAction(action)"
+                  />
+                </template>
+              </v-tooltip>
             </div>
           </v-card>
         </v-col>
@@ -313,38 +314,27 @@ onUnmounted(() => {
       <!-- Charts -->
       <v-row class="mt-2">
         <v-col cols="12" md="6">
-          <v-card>
-            <v-card-title>
-              <v-icon class="mr-2">mdi-chart-line</v-icon>
-              System Performance
-            </v-card-title>
-            <v-card-text>
-              <div style="height: 250px;">
-                <Line :data="systemChartData" :options="chartOptions" />
-              </div>
-            </v-card-text>
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-3">System Performance</div>
+            <div style="height: 220px;">
+              <Line :data="systemChartData" :options="chartOptions" />
+            </div>
           </v-card>
         </v-col>
         <v-col cols="12" md="6">
-          <v-card>
-            <v-card-title>
-              <v-icon class="mr-2">mdi-account-multiple</v-icon>
-              Player Count
-            </v-card-title>
-            <v-card-text>
-              <div style="height: 250px;">
-                <Line :data="playerChartData" :options="chartOptions" />
-              </div>
-            </v-card-text>
+          <v-card class="pa-4">
+            <div class="text-caption text-medium-emphasis mb-3">Player Count</div>
+            <div style="height: 220px;">
+              <Line :data="playerChartData" :options="chartOptions" />
+            </div>
           </v-card>
         </v-col>
       </v-row>
     </template>
 
-    <!-- Confirm Dialog -->
     <v-dialog v-model="confirmDialog" max-width="400">
       <v-card>
-        <v-card-title>{{ confirmAction?.title }}</v-card-title>
+        <v-card-title class="text-h6 font-weight-medium">{{ confirmAction?.title }}</v-card-title>
         <v-card-text>{{ confirmAction?.text }}</v-card-text>
         <v-card-actions>
           <v-spacer />

@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
+import { useServerStore } from '../stores/server'
 
+const serverStore = useServerStore()
 const terminalRef = ref<HTMLElement | null>(null)
 const commandInput = ref('')
 const commandHistory = ref<string[]>([])
@@ -15,12 +17,13 @@ let fitAddon: FitAddon | null = null
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+const activeServerId = computed(() => serverStore.activeServerId ?? '')
+
 const quickCommands = [
   { label: 'status', cmd: 'status' },
   { label: 'serverinfo', cmd: 'serverinfo' },
   { label: 'players', cmd: 'global.playerlist' },
   { label: 'save', cmd: 'server.save' },
-  { label: 'oxide.reload *', cmd: 'oxide.reload *' },
 ]
 
 function initTerminal() {
@@ -28,7 +31,7 @@ function initTerminal() {
 
   terminal = new Terminal({
     theme: {
-      background: '#0a0a0a',
+      background: '#0a0a0b',
       foreground: '#33ff33',
       cursor: '#33ff33',
       selectionBackground: 'rgba(51, 255, 51, 0.3)',
@@ -48,22 +51,28 @@ function initTerminal() {
   terminal.open(terminalRef.value)
   fitAddon.fit()
 
-  terminal.writeln('\x1b[1;31m=== Rust Server Console ===\x1b[0m')
-  terminal.writeln('\x1b[90mConnecting to server...\x1b[0m')
+  terminal.writeln('\x1b[1;34m=== Server Console ===\x1b[0m')
+  terminal.writeln('\x1b[90mConnecting...\x1b[0m')
   terminal.writeln('')
 }
 
 function connectWebSocket() {
+  if (!activeServerId.value) return
+  // Close existing
+  if (ws) {
+    ws.onclose = null
+    ws.close()
+  }
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+
   const token = localStorage.getItem('jwt_token')
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = token
-    ? `${wsProtocol}//${window.location.host}/ws/console?token=${token}`
-    : `${wsProtocol}//${window.location.host}/ws/console`
+  const url = `${wsProtocol}//${window.location.host}/ws/${activeServerId.value}/console${token ? '?token=' + token : ''}`
 
   ws = new WebSocket(url)
 
   ws.onopen = () => {
-    terminal?.writeln('\x1b[32mConnected to server console.\x1b[0m')
+    terminal?.writeln('\x1b[32mConnected.\x1b[0m')
   }
 
   ws.onmessage = (event: MessageEvent) => {
@@ -88,7 +97,7 @@ function sendCommand(cmd?: string) {
     ws.send(command)
     terminal?.writeln(`\x1b[1;37m> ${command}\x1b[0m`)
   } else {
-    terminal?.writeln('\x1b[31mNot connected to server.\x1b[0m')
+    terminal?.writeln('\x1b[31mNot connected.\x1b[0m')
   }
 
   if (!cmd) {
@@ -122,6 +131,12 @@ function clearTerminal() {
   terminal?.clear()
 }
 
+watch(() => serverStore.activeServerId, () => {
+  terminal?.clear()
+  terminal?.writeln('\x1b[90mSwitching server...\x1b[0m')
+  connectWebSocket()
+})
+
 onMounted(async () => {
   await nextTick()
   initTerminal()
@@ -145,7 +160,7 @@ onUnmounted(() => {
 <template>
   <div class="d-flex flex-column" style="height: calc(100vh - 100px);">
     <div class="d-flex align-center mb-3">
-      <div class="text-h5 font-weight-bold">Console</div>
+      <div class="text-h6 font-weight-medium" style="color: #e2e8f0;">Console</div>
       <v-spacer />
       <v-btn
         v-for="qc in quickCommands"
@@ -161,7 +176,7 @@ onUnmounted(() => {
       <v-btn
         size="small"
         variant="tonal"
-        color="grey"
+        color="default"
         class="ml-2"
         prepend-icon="mdi-delete"
         @click="clearTerminal"

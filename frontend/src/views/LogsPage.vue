@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import api from '../services/api'
+import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { serverApi } from '../services/api'
+import { useServerStore } from '../stores/server'
 
+const serverStore = useServerStore()
 const logFile = ref('console')
 const lineCount = ref(100)
 const autoScroll = ref(true)
 const autoRefresh = ref(true)
 const loading = ref(true)
-const logContent = ref('')
-
+const logLines = ref<string[]>([])
 const logOutputRef = ref<HTMLPreElement | null>(null)
-
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+const activeServerId = computed(() => serverStore.activeServerId ?? '')
 
 const logFiles = [
   { title: 'Console', value: 'console' },
@@ -26,17 +28,19 @@ const lineOptions = [
 ]
 
 async function fetchLogs() {
+  if (!activeServerId.value) return
   try {
-    const res = await api.get<{ content: string }>('/logs/tail', {
+    const api = serverApi(activeServerId.value)
+    const res = await api.get<{ lines: string[] }>('/logs/tail', {
       params: { file: logFile.value, lines: lineCount.value },
     })
-    logContent.value = res.data.content ?? ''
+    logLines.value = res.data.lines ?? []
     if (autoScroll.value) {
       await nextTick()
       scrollToBottom()
     }
   } catch {
-    logContent.value = 'Failed to load logs.'
+    logLines.value = ['Failed to load logs.']
   } finally {
     loading.value = false
   }
@@ -56,106 +60,34 @@ function startAutoRefresh() {
 }
 
 function stopAutoRefresh() {
-  if (refreshTimer) {
-    clearInterval(refreshTimer)
-    refreshTimer = null
-  }
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
 }
 
-function clearLog() {
-  logContent.value = ''
-}
+function clearLog() { logLines.value = [] }
 
-watch([logFile, lineCount], () => {
-  loading.value = true
-  fetchLogs()
-})
+watch([logFile, lineCount], () => { loading.value = true; fetchLogs() })
+watch(autoRefresh, (val) => { if (val) startAutoRefresh(); else stopAutoRefresh() })
+watch(() => serverStore.activeServerId, () => { loading.value = true; fetchLogs() })
 
-watch(autoRefresh, (val) => {
-  if (val) {
-    startAutoRefresh()
-  } else {
-    stopAutoRefresh()
-  }
-})
-
-onMounted(() => {
-  fetchLogs()
-  startAutoRefresh()
-})
-
-onUnmounted(() => {
-  stopAutoRefresh()
-})
+onMounted(() => { fetchLogs(); startAutoRefresh() })
+onUnmounted(() => { stopAutoRefresh() })
 </script>
 
 <template>
   <div class="d-flex flex-column" style="height: calc(100vh - 100px);">
     <div class="d-flex align-center mb-3 flex-wrap ga-2">
-      <div class="text-h5 font-weight-bold">Log Viewer</div>
+      <div class="text-h6 font-weight-medium" style="color: #e2e8f0;">Log Viewer</div>
       <v-spacer />
-
-      <v-select
-        v-model="logFile"
-        :items="logFiles"
-        density="compact"
-        variant="outlined"
-        hide-details
-        style="max-width: 160px;"
-      />
-
-      <v-select
-        v-model="lineCount"
-        :items="lineOptions"
-        density="compact"
-        variant="outlined"
-        hide-details
-        style="max-width: 160px;"
-      />
-
-      <v-btn-toggle
-        v-model="autoScroll"
-        density="compact"
-        variant="outlined"
-        color="primary"
-      >
-        <v-btn :value="true" size="small">
-          <v-icon start>mdi-arrow-down-bold</v-icon>
-          Auto-scroll
-        </v-btn>
+      <v-select v-model="logFile" :items="logFiles" density="compact" variant="outlined" hide-details style="max-width: 150px;" />
+      <v-select v-model="lineCount" :items="lineOptions" density="compact" variant="outlined" hide-details style="max-width: 150px;" />
+      <v-btn-toggle v-model="autoScroll" density="compact" variant="outlined" color="primary">
+        <v-btn :value="true" size="small"><v-icon start>mdi-arrow-down-bold</v-icon>Auto-scroll</v-btn>
       </v-btn-toggle>
-
-      <v-btn-toggle
-        v-model="autoRefresh"
-        density="compact"
-        variant="outlined"
-        color="primary"
-      >
-        <v-btn :value="true" size="small">
-          <v-icon start>mdi-refresh-auto</v-icon>
-          Live
-        </v-btn>
+      <v-btn-toggle v-model="autoRefresh" density="compact" variant="outlined" color="primary">
+        <v-btn :value="true" size="small"><v-icon start>mdi-refresh-auto</v-icon>Live</v-btn>
       </v-btn-toggle>
-
-      <v-btn
-        size="small"
-        variant="tonal"
-        color="info"
-        prepend-icon="mdi-refresh"
-        @click="fetchLogs"
-      >
-        Refresh
-      </v-btn>
-
-      <v-btn
-        size="small"
-        variant="tonal"
-        color="grey"
-        prepend-icon="mdi-delete"
-        @click="clearLog"
-      >
-        Clear
-      </v-btn>
+      <v-btn size="small" variant="tonal" color="primary" prepend-icon="mdi-refresh" @click="fetchLogs">Refresh</v-btn>
+      <v-btn size="small" variant="tonal" color="default" prepend-icon="mdi-delete" @click="clearLog">Clear</v-btn>
     </div>
 
     <v-card class="flex-grow-1 pa-0" style="overflow: hidden;">
@@ -165,20 +97,8 @@ onUnmounted(() => {
       <pre
         v-else
         ref="logOutputRef"
-        style="
-          height: 100%;
-          margin: 0;
-          overflow: auto;
-          background: #0a0a0a;
-          color: #33ff33;
-          padding: 12px;
-          font-family: 'Cascadia Code', 'Fira Code', monospace;
-          font-size: 12px;
-          line-height: 1.4;
-          white-space: pre-wrap;
-          word-break: break-all;
-        "
-      >{{ logContent }}</pre>
+        style="height: 100%; margin: 0; overflow: auto; background: #0a0a0b; color: #33ff33; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-all;"
+      >{{ logLines.join('\n') }}</pre>
     </v-card>
   </div>
 </template>

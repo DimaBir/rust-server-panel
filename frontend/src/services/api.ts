@@ -27,4 +27,18 @@ api.interceptors.response.use(
   }
 )
 
+/** Create a scoped API helper for a specific server */
+export function serverApi(serverId: string) {
+  return {
+    get: <T = unknown>(path: string, config?: Parameters<typeof api.get>[1]) =>
+      api.get<T>(`/servers/${serverId}${path}`, config),
+    post: <T = unknown>(path: string, data?: unknown, config?: Parameters<typeof api.post>[2]) =>
+      api.post<T>(`/servers/${serverId}${path}`, data, config),
+    put: <T = unknown>(path: string, data?: unknown, config?: Parameters<typeof api.put>[2]) =>
+      api.put<T>(`/servers/${serverId}${path}`, data, config),
+    delete: <T = unknown>(path: string, config?: Parameters<typeof api.delete>[1]) =>
+      api.delete<T>(`/servers/${serverId}${path}`, config),
+  }
+}
+
 export default api

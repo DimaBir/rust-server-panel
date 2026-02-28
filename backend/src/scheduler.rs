@@ -1,17 +1,17 @@
 use actix_web::{web, HttpResponse};
 use chrono::{DateTime, NaiveTime, Utc, Weekday, Datelike};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
-use crate::config::AppConfig;
+use crate::config::GameServerConfig;
 use crate::lgsm::LgsmLock;
 use crate::rcon::RconClient;
 
-/// Scheduled job types.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobType {
@@ -24,33 +24,35 @@ pub enum JobType {
     Announce,
 }
 
-/// Scheduled job definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScheduledJob {
     pub id: String,
     pub name: String,
     pub job_type: JobType,
     pub enabled: bool,
-    /// Cron-like schedule: "HH:MM" for daily, or "Day HH:MM" for weekly.
     pub schedule: String,
-    /// For RconCommand type: the command to execute.
-    /// For Announce type: the message to broadcast.
     pub payload: Option<String>,
     pub last_run: Option<DateTime<Utc>>,
     pub next_run: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Which server this job applies to
+    pub server_id: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateJobRequest {
     pub name: String,
     pub job_type: JobType,
     pub schedule: String,
     pub payload: Option<String>,
     pub enabled: Option<bool>,
+    pub server_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateJobRequest {
     pub name: Option<String>,
     pub job_type: Option<JobType>,
@@ -72,7 +74,6 @@ struct SuccessBody {
 
 const SCHEDULES_FILE: &str = "schedules.json";
 
-/// Shared scheduler state.
 pub struct Scheduler {
     pub jobs: RwLock<Vec<ScheduledJob>>,
 }
@@ -103,16 +104,11 @@ impl Scheduler {
     }
 }
 
-/// Parse a schedule string to determine the next run time.
-/// Formats:
-///   "HH:MM" - daily at that time (UTC)
-///   "Mon HH:MM", "Tue HH:MM", etc. - weekly on that day
 fn compute_next_run(schedule: &str) -> Option<DateTime<Utc>> {
     let now = Utc::now();
     let parts: Vec<&str> = schedule.trim().split_whitespace().collect();
 
     match parts.len() {
-        // "HH:MM" -> daily
         1 => {
             let time = NaiveTime::parse_from_str(parts[0], "%H:%M").ok()?;
             let today = now.date_naive().and_time(time);
@@ -120,12 +116,10 @@ fn compute_next_run(schedule: &str) -> Option<DateTime<Utc>> {
             if today_utc > now {
                 Some(today_utc)
             } else {
-                // Tomorrow
                 let tomorrow = now.date_naive().succ_opt()?.and_time(time);
                 Some(tomorrow.and_utc())
             }
         }
-        // "Day HH:MM" -> weekly
         2 => {
             let target_day = parse_weekday(parts[0])?;
             let time = NaiveTime::parse_from_str(parts[1], "%H:%M").ok()?;
@@ -142,7 +136,6 @@ fn compute_next_run(schedule: &str) -> Option<DateTime<Utc>> {
             let target_dt = target_date.and_time(time).and_utc();
 
             if target_dt <= now {
-                // Next week
                 let next_week = target_date + chrono::Duration::days(7);
                 Some(next_week.and_time(time).and_utc())
             } else {
@@ -166,12 +159,11 @@ fn parse_weekday(s: &str) -> Option<Weekday> {
     }
 }
 
-/// Background task: check scheduled jobs every 30 seconds and execute due ones.
 pub fn spawn_scheduler(
     scheduler: Arc<Scheduler>,
-    rcon: Arc<RconClient>,
-    config: AppConfig,
-    lgsm_lock: Arc<LgsmLock>,
+    rcon_clients: HashMap<String, Arc<RconClient>>,
+    server_configs: Vec<GameServerConfig>,
+    lgsm_locks: HashMap<String, Arc<LgsmLock>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = interval(Duration::from_secs(30));
@@ -187,7 +179,6 @@ pub fn spawn_scheduler(
                     continue;
                 }
 
-                // Compute next_run if not set
                 if job.next_run.is_none() {
                     job.next_run = compute_next_run(&job.schedule);
                 }
@@ -196,8 +187,15 @@ pub fn spawn_scheduler(
                     if now >= next {
                         tracing::info!("Executing scheduled job: {} ({})", job.name, job.id);
 
-                        // Execute the job
-                        execute_job(job, &rcon, &config, &lgsm_lock).await;
+                        let rcon = rcon_clients.get(&job.server_id);
+                        let config = server_configs.iter().find(|s| s.id == job.server_id);
+                        let lgsm_lock = lgsm_locks.get(&job.server_id);
+
+                        if let (Some(rcon), Some(config), Some(lgsm_lock)) = (rcon, config, lgsm_lock) {
+                            execute_job(job, rcon, config, lgsm_lock).await;
+                        } else {
+                            tracing::warn!("Job '{}' server '{}' not found, skipping", job.name, job.server_id);
+                        }
 
                         job.last_run = Some(now);
                         job.next_run = compute_next_run(&job.schedule);
@@ -207,7 +205,6 @@ pub fn spawn_scheduler(
 
             drop(jobs);
 
-            // Persist
             if let Err(e) = scheduler.save_to_disk().await {
                 tracing::error!("Failed to save schedules: {}", e);
             }
@@ -218,7 +215,7 @@ pub fn spawn_scheduler(
 async fn execute_job(
     job: &ScheduledJob,
     rcon: &RconClient,
-    config: &AppConfig,
+    config: &GameServerConfig,
     lgsm_lock: &LgsmLock,
 ) {
     let result = match job.job_type {
@@ -293,7 +290,7 @@ fn delete_wipe_files(server_files: &str, full: bool) {
 
 // --- API Endpoints ---
 
-/// GET /api/schedule - list all jobs.
+/// GET /api/schedule
 pub async fn list_jobs(
     scheduler: web::Data<Arc<Scheduler>>,
 ) -> HttpResponse {
@@ -301,11 +298,16 @@ pub async fn list_jobs(
     HttpResponse::Ok().json(&*jobs)
 }
 
-/// POST /api/schedule - create a new job.
+/// POST /api/schedule
 pub async fn create_job(
     body: web::Json<CreateJobRequest>,
     scheduler: web::Data<Arc<Scheduler>>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
 ) -> HttpResponse {
+    let server_id = body.server_id.clone().unwrap_or_else(|| {
+        server_configs.first().map(|s| s.id.clone()).unwrap_or_else(|| "main".to_string())
+    });
+
     let next_run = compute_next_run(&body.schedule);
     let job = ScheduledJob {
         id: Uuid::new_v4().to_string(),
@@ -317,6 +319,7 @@ pub async fn create_job(
         last_run: None,
         next_run,
         created_at: Utc::now(),
+        server_id,
     };
 
     {
@@ -331,7 +334,7 @@ pub async fn create_job(
     HttpResponse::Created().json(job)
 }
 
-/// PUT /api/schedule/{id} - update a job.
+/// PUT /api/schedule/{id}
 pub async fn update_job(
     id: web::Path<String>,
     body: web::Json<UpdateJobRequest>,
@@ -340,29 +343,17 @@ pub async fn update_job(
     let mut jobs = scheduler.jobs.write().await;
     let job = match jobs.iter_mut().find(|j| j.id == *id) {
         Some(j) => j,
-        None => {
-            return HttpResponse::NotFound().json(ErrorBody {
-                error: "Job not found".to_string(),
-            });
-        }
+        None => return HttpResponse::NotFound().json(ErrorBody { error: "Job not found".to_string() }),
     };
 
-    if let Some(ref name) = body.name {
-        job.name = name.clone();
-    }
-    if let Some(ref job_type) = body.job_type {
-        job.job_type = job_type.clone();
-    }
+    if let Some(ref name) = body.name { job.name = name.clone(); }
+    if let Some(ref job_type) = body.job_type { job.job_type = job_type.clone(); }
     if let Some(ref schedule) = body.schedule {
         job.schedule = schedule.clone();
         job.next_run = compute_next_run(schedule);
     }
-    if let Some(ref payload) = body.payload {
-        job.payload = Some(payload.clone());
-    }
-    if let Some(enabled) = body.enabled {
-        job.enabled = enabled;
-    }
+    if let Some(ref payload) = body.payload { job.payload = Some(payload.clone()); }
+    if let Some(enabled) = body.enabled { job.enabled = enabled; }
 
     let job = job.clone();
     drop(jobs);
@@ -374,7 +365,7 @@ pub async fn update_job(
     HttpResponse::Ok().json(job)
 }
 
-/// DELETE /api/schedule/{id} - delete a job.
+/// DELETE /api/schedule/{id}
 pub async fn delete_job(
     id: web::Path<String>,
     scheduler: web::Data<Arc<Scheduler>>,
@@ -384,9 +375,7 @@ pub async fn delete_job(
     jobs.retain(|j| j.id != *id);
 
     if jobs.len() == original_len {
-        return HttpResponse::NotFound().json(ErrorBody {
-            error: "Job not found".to_string(),
-        });
+        return HttpResponse::NotFound().json(ErrorBody { error: "Job not found".to_string() });
     }
 
     drop(jobs);
@@ -401,7 +390,7 @@ pub async fn delete_job(
     })
 }
 
-/// POST /api/schedule/{id}/toggle - enable/disable a job.
+/// POST /api/schedule/{id}/toggle
 pub async fn toggle_job(
     id: web::Path<String>,
     scheduler: web::Data<Arc<Scheduler>>,
@@ -409,11 +398,7 @@ pub async fn toggle_job(
     let mut jobs = scheduler.jobs.write().await;
     let job = match jobs.iter_mut().find(|j| j.id == *id) {
         Some(j) => j,
-        None => {
-            return HttpResponse::NotFound().json(ErrorBody {
-                error: "Job not found".to_string(),
-            });
-        }
+        None => return HttpResponse::NotFound().json(ErrorBody { error: "Job not found".to_string() }),
     };
 
     job.enabled = !job.enabled;

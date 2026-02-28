@@ -33,6 +33,7 @@ pub struct RconResponse {
 
 /// Parsed server info from the "serverinfo" RCON command.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
     #[serde(default, alias = "Hostname")]
     pub hostname: String,
@@ -60,6 +61,7 @@ pub struct ServerInfo {
 
 /// Parsed player entry from the "playerlist" RCON command.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Player {
     #[serde(default, alias = "SteamID")]
     pub steam_id: String,

@@ -3,24 +3,41 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
-    #[serde(default = "default_server_config")]
-    pub server: ServerConfig,
-    #[serde(default = "default_rcon_config")]
-    pub rcon: RconConfig,
+    #[serde(default = "default_panel_config", alias = "server")]
+    pub panel: PanelConfig,
     #[serde(default = "default_auth_config")]
     pub auth: AuthConfig,
-    #[serde(default = "default_paths_config")]
-    pub paths: PathsConfig,
     #[serde(default = "default_monitor_config")]
     pub monitor: MonitorConfig,
+    /// Multi-server list. If absent, falls back to legacy top-level rcon/paths.
+    #[serde(default)]
+    pub servers: Vec<GameServerConfig>,
+
+    // Legacy single-server fields (used for backward compat)
+    #[serde(default)]
+    rcon: Option<RconConfig>,
+    #[serde(default)]
+    paths: Option<PathsConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
+pub struct PanelConfig {
     #[serde(default = "default_host")]
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GameServerConfig {
+    #[serde(default = "default_server_id")]
+    pub id: String,
+    #[serde(default = "default_server_name")]
+    pub name: String,
+    #[serde(default = "default_rcon_config")]
+    pub rcon: RconConfig,
+    #[serde(default = "default_paths_config")]
+    pub paths: PathsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,8 +87,8 @@ pub struct MonitorConfig {
 }
 
 // Default value functions
-fn default_server_config() -> ServerConfig {
-    ServerConfig {
+fn default_panel_config() -> PanelConfig {
+    PanelConfig {
         host: default_host(),
         port: default_port(),
     }
@@ -131,7 +148,6 @@ fn default_admin_username() -> String {
     "admin".to_string()
 }
 fn default_password_hash() -> String {
-    // Default hash for "admin" - CHANGE IN PRODUCTION
     "$2b$12$LJ3m4ys3Lg2VhsMwKMriOe5VJxMWm9F0RPDOlAPsaGBVkle6sUNS6".to_string()
 }
 fn default_jwt_secret() -> String {
@@ -164,23 +180,46 @@ fn default_poll_interval() -> u64 {
 fn default_history_size() -> usize {
     720
 }
+fn default_server_id() -> String {
+    "main".to_string()
+}
+fn default_server_name() -> String {
+    "Main Server".to_string()
+}
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
         let config_path = Path::new("config.yaml");
-        if config_path.exists() {
+        let mut config = if config_path.exists() {
             let contents = std::fs::read_to_string(config_path)?;
             let config: AppConfig = serde_yaml::from_str(&contents)?;
-            Ok(config)
+            config
         } else {
             tracing::warn!("config.yaml not found, using defaults");
-            Ok(AppConfig {
-                server: default_server_config(),
-                rcon: default_rcon_config(),
+            AppConfig {
+                panel: default_panel_config(),
                 auth: default_auth_config(),
-                paths: default_paths_config(),
                 monitor: default_monitor_config(),
-            })
+                servers: Vec::new(),
+                rcon: None,
+                paths: None,
+            }
+        };
+
+        // Backward compatibility: if no servers defined but legacy rcon/paths exist,
+        // wrap them into a single server entry.
+        if config.servers.is_empty() {
+            let rcon = config.rcon.take().unwrap_or_else(default_rcon_config);
+            let paths = config.paths.take().unwrap_or_else(default_paths_config);
+            config.servers.push(GameServerConfig {
+                id: default_server_id(),
+                name: default_server_name(),
+                rcon,
+                paths,
+            });
+            tracing::info!("Migrated legacy config to single-server format");
         }
+
+        Ok(config)
     }
 }

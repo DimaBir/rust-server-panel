@@ -1,3 +1,9 @@
+export interface GameServer {
+  id: string
+  name: string
+  online: boolean
+}
+
 export interface ServerInfo {
   hostname: string
   players: number
@@ -7,6 +13,13 @@ export interface ServerInfo {
   uptime: number
   map: string
   online: boolean
+  cpuPercent: number
+  memTotal: number
+  memUsed: number
+  memPercent: number
+  diskTotal: number
+  diskUsed: number
+  diskPercent: number
 }
 
 export interface SystemStats {
@@ -28,7 +41,13 @@ export interface GameStats {
   entities: number
   uptime: number
   map: string
+  hostname: string
   timestamp: string
+}
+
+export interface MonitorResponse<T> {
+  current: T | null
+  history: T[]
 }
 
 export interface Player {
@@ -51,11 +70,10 @@ export interface FileEntry {
 
 export interface Plugin {
   name: string
-  fileName: string
+  filename: string
   size: number
-  modifiedAt: string
+  modified: string
   hasConfig: boolean
-  loaded: boolean
 }
 
 export interface UModPlugin {
@@ -71,10 +89,14 @@ export interface UModPlugin {
 export interface ScheduledJob {
   id: string
   name: string
+  jobType: string
   schedule: string
-  action: string
-  params: Record<string, string>
+  payload: string | null
   enabled: boolean
+  lastRun: string | null
+  nextRun: string | null
+  createdAt: string
+  serverId: string
 }
 
 export interface LoginRequest {
@@ -84,9 +106,10 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   token: string
+  username: string
+  expiresAt: string
 }
 
 export interface ApiError {
   error: string
-  message: string
 }

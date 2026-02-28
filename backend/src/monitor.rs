@@ -12,6 +12,7 @@ use crate::rcon::RconClient;
 
 /// A single system metrics snapshot.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemSnapshot {
     pub timestamp: DateTime<Utc>,
     pub cpu_percent: f32,
@@ -25,6 +26,7 @@ pub struct SystemSnapshot {
 
 /// A single game server metrics snapshot.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameSnapshot {
     pub timestamp: DateTime<Utc>,
     pub online: bool,
@@ -34,7 +36,7 @@ pub struct GameSnapshot {
     pub fps: f64,
     pub entities: u64,
     pub uptime: u64,
-    pub map_name: String,
+    pub map: String,
     pub hostname: String,
 }
 
@@ -151,6 +153,7 @@ pub fn spawn_game_collector(
     monitor: Arc<GameMonitor>,
     rcon: Arc<RconClient>,
     config: MonitorConfig,
+    server_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = interval(Duration::from_secs(config.poll_interval_secs));
@@ -168,11 +171,11 @@ pub fn spawn_game_collector(
                     fps: info.framerate,
                     entities: info.entity_count,
                     uptime: info.uptime,
-                    map_name: info.map,
+                    map: info.map,
                     hostname: info.hostname,
                 },
                 Err(e) => {
-                    tracing::debug!("Game server poll failed (server may be offline): {}", e);
+                    tracing::debug!("Game server '{}' poll failed: {}", server_id, e);
                     GameSnapshot {
                         timestamp: Utc::now(),
                         online: false,
@@ -182,7 +185,7 @@ pub fn spawn_game_collector(
                         fps: 0.0,
                         entities: 0,
                         uptime: 0,
-                        map_name: String::new(),
+                        map: String::new(),
                         hostname: String::new(),
                     }
                 }
@@ -196,6 +199,7 @@ pub fn spawn_game_collector(
 
 /// API response for system monitoring.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SystemMonitorResponse {
     current: Option<SystemSnapshot>,
     history: Vec<SystemSnapshot>,
@@ -203,6 +207,7 @@ struct SystemMonitorResponse {
 
 /// API response for game monitoring.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GameMonitorResponse {
     current: Option<GameSnapshot>,
     history: Vec<GameSnapshot>,
@@ -222,10 +227,16 @@ pub async fn get_system_metrics(
     })
 }
 
-/// GET /api/monitor/game
+/// GET /api/servers/{server_id}/monitor/game
 pub async fn get_game_metrics(
-    monitor: web::Data<Arc<GameMonitor>>,
+    server_id: web::Path<String>,
+    game_monitors: web::Data<std::collections::HashMap<String, Arc<GameMonitor>>>,
 ) -> HttpResponse {
+    let monitor = match game_monitors.get(server_id.as_str()) {
+        Some(m) => m,
+        None => return HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})),
+    };
+
     let history = monitor.history.read().await;
     let current = history.latest().cloned();
     let all = history.to_vec();

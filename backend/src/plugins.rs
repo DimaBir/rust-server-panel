@@ -2,13 +2,15 @@ use actix_multipart::Multipart;
 use actix_web::{web, HttpResponse};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::config::AppConfig;
+use crate::config::GameServerConfig;
 use crate::rcon::RconClient;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginInfo {
     pub name: String,
     pub filename: String,
@@ -39,7 +41,6 @@ pub struct UmodInstallBody {
     pub filename: String,
 }
 
-/// Derive plugin name from .cs filename (strip extension).
 fn plugin_name_from_file(filename: &str) -> String {
     Path::new(filename)
         .file_stem()
@@ -48,12 +49,25 @@ fn plugin_name_from_file(filename: &str) -> String {
         .to_string()
 }
 
-/// GET /api/plugins - list all installed Oxide plugins (.cs files).
+fn get_server_paths(server_id: &str, server_configs: &[GameServerConfig]) -> Result<(String, String), HttpResponse> {
+    let config = server_configs
+        .iter()
+        .find(|s| s.id == server_id)
+        .ok_or_else(|| HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }))?;
+    Ok((config.paths.oxide_plugins.clone(), config.paths.oxide_config.clone()))
+}
+
+/// GET /api/servers/{server_id}/plugins
 pub async fn list_plugins(
-    config: web::Data<AppConfig>,
+    server_id: web::Path<String>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
 ) -> HttpResponse {
-    let plugins_dir = Path::new(&config.paths.oxide_plugins);
-    let config_dir = Path::new(&config.paths.oxide_config);
+    let (plugins_dir_str, config_dir_str) = match get_server_paths(&server_id, &server_configs) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let plugins_dir = Path::new(&plugins_dir_str);
+    let config_dir = Path::new(&config_dir_str);
 
     if !plugins_dir.exists() {
         return HttpResponse::Ok().json(Vec::<PluginInfo>::new());
@@ -76,18 +90,10 @@ pub async fn list_plugins(
                             let dt: chrono::DateTime<chrono::Utc> = t.into();
                             dt.to_rfc3339()
                         });
-
-                    // Check if config file exists
                     let config_file = config_dir.join(format!("{}.json", name));
                     let has_config = config_file.exists();
 
-                    plugins.push(PluginInfo {
-                        name,
-                        filename,
-                        size,
-                        modified,
-                        has_config,
-                    });
+                    plugins.push(PluginInfo { name, filename, size, modified, has_config });
                 }
             }
         }
@@ -102,13 +108,17 @@ pub async fn list_plugins(
     HttpResponse::Ok().json(plugins)
 }
 
-/// GET /api/plugins/{name}/config - read plugin config JSON.
+/// GET /api/servers/{server_id}/plugins/{name}/config
 pub async fn get_plugin_config(
-    name: web::Path<String>,
-    config: web::Data<AppConfig>,
+    path: web::Path<(String, String)>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
 ) -> HttpResponse {
-    let config_path = PathBuf::from(&config.paths.oxide_config)
-        .join(format!("{}.json", name.as_ref()));
+    let (server_id, name) = path.into_inner();
+    let (_, config_dir_str) = match get_server_paths(&server_id, &server_configs) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let config_path = PathBuf::from(&config_dir_str).join(format!("{}.json", name));
 
     if !config_path.exists() {
         return HttpResponse::NotFound().json(ErrorBody {
@@ -118,19 +128,15 @@ pub async fn get_plugin_config(
 
     match std::fs::read_to_string(&config_path) {
         Ok(content) => {
-            // Try to parse as JSON for validation
             match serde_json::from_str::<serde_json::Value>(&content) {
                 Ok(json) => HttpResponse::Ok().json(serde_json::json!({
-                    "plugin": name.as_ref(),
+                    "plugin": name,
                     "config": json,
                 })),
-                Err(_) => {
-                    // Return raw content if not valid JSON
-                    HttpResponse::Ok().json(serde_json::json!({
-                        "plugin": name.as_ref(),
-                        "raw_config": content,
-                    }))
-                }
+                Err(_) => HttpResponse::Ok().json(serde_json::json!({
+                    "plugin": name,
+                    "raw_config": content,
+                })),
             }
         }
         Err(e) => HttpResponse::InternalServerError().json(ErrorBody {
@@ -139,17 +145,20 @@ pub async fn get_plugin_config(
     }
 }
 
-/// PUT /api/plugins/{name}/config - save plugin config and reload.
+/// PUT /api/servers/{server_id}/plugins/{name}/config
 pub async fn save_plugin_config(
-    name: web::Path<String>,
+    path: web::Path<(String, String)>,
     body: web::Json<serde_json::Value>,
-    config: web::Data<AppConfig>,
-    rcon: web::Data<Arc<RconClient>>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
+    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
 ) -> HttpResponse {
-    let config_path = PathBuf::from(&config.paths.oxide_config)
-        .join(format!("{}.json", name.as_ref()));
+    let (server_id, name) = path.into_inner();
+    let (_, config_dir_str) = match get_server_paths(&server_id, &server_configs) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let config_path = PathBuf::from(&config_dir_str).join(format!("{}.json", name));
 
-    // Ensure config directory exists
     if let Some(parent) = config_path.parent() {
         if !parent.exists() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -160,17 +169,11 @@ pub async fn save_plugin_config(
         }
     }
 
-    // Write the config
     let json_str = match serde_json::to_string_pretty(&body.into_inner()) {
         Ok(s) => s,
-        Err(e) => {
-            return HttpResponse::BadRequest().json(ErrorBody {
-                error: format!("Invalid JSON: {}", e),
-            });
-        }
+        Err(e) => return HttpResponse::BadRequest().json(ErrorBody { error: format!("Invalid JSON: {}", e) }),
     };
 
-    // Backup existing config
     if config_path.exists() {
         let backup = format!("{}.bak", config_path.display());
         let _ = std::fs::copy(&config_path, &backup);
@@ -182,10 +185,13 @@ pub async fn save_plugin_config(
         });
     }
 
-    // Reload plugin via RCON
-    let reload_result = match rcon.oxide_reload(name.as_ref()).await {
-        Ok(msg) => msg,
-        Err(e) => format!("Reload failed (server may be offline): {}", e),
+    let reload_result = if let Some(rcon) = rcon_clients.get(&server_id) {
+        match rcon.oxide_reload(&name).await {
+            Ok(msg) => msg,
+            Err(e) => format!("Reload failed (server may be offline): {}", e),
+        }
+    } else {
+        "RCON not available".to_string()
     };
 
     HttpResponse::Ok().json(SuccessBody {
@@ -194,15 +200,19 @@ pub async fn save_plugin_config(
     })
 }
 
-/// POST /api/plugins/upload - upload a .cs plugin file.
+/// POST /api/servers/{server_id}/plugins/upload
 pub async fn upload_plugin(
+    server_id: web::Path<String>,
     mut payload: Multipart,
-    config: web::Data<AppConfig>,
-    rcon: web::Data<Arc<RconClient>>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
+    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
 ) -> HttpResponse {
-    let plugins_dir = PathBuf::from(&config.paths.oxide_plugins);
+    let (plugins_dir_str, _) = match get_server_paths(&server_id, &server_configs) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let plugins_dir = PathBuf::from(&plugins_dir_str);
 
-    // Ensure plugins directory exists
     if !plugins_dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&plugins_dir) {
             return HttpResponse::InternalServerError().json(ErrorBody {
@@ -214,11 +224,7 @@ pub async fn upload_plugin(
     while let Some(item) = payload.next().await {
         let mut field = match item {
             Ok(f) => f,
-            Err(e) => {
-                return HttpResponse::BadRequest().json(ErrorBody {
-                    error: format!("Multipart error: {}", e),
-                });
-            }
+            Err(e) => return HttpResponse::BadRequest().json(ErrorBody { error: format!("Multipart error: {}", e) }),
         };
 
         let filename = field
@@ -227,18 +233,14 @@ pub async fn upload_plugin(
             .unwrap_or_else(|| "plugin.cs".to_string());
 
         if !filename.ends_with(".cs") {
-            return HttpResponse::BadRequest().json(ErrorBody {
-                error: "Only .cs plugin files are allowed".to_string(),
-            });
+            return HttpResponse::BadRequest().json(ErrorBody { error: "Only .cs plugin files are allowed".to_string() });
         }
 
         let target_path = plugins_dir.join(&filename);
 
         let mut file_data = Vec::new();
         while let Some(chunk) = field.next().await {
-            if let Ok(bytes) = chunk {
-                file_data.extend_from_slice(&bytes);
-            }
+            if let Ok(bytes) = chunk { file_data.extend_from_slice(&bytes); }
         }
 
         if let Err(e) = std::fs::write(&target_path, &file_data) {
@@ -249,10 +251,13 @@ pub async fn upload_plugin(
 
         let plugin_name = plugin_name_from_file(&filename);
 
-        // Try to load the plugin via RCON
-        let load_result = match rcon.oxide_load(&plugin_name).await {
-            Ok(msg) => msg,
-            Err(e) => format!("Load failed (server may be offline): {}", e),
+        let load_result = if let Some(rcon) = rcon_clients.get(server_id.as_str()) {
+            match rcon.oxide_load(&plugin_name).await {
+                Ok(msg) => msg,
+                Err(e) => format!("Load failed (server may be offline): {}", e),
+            }
+        } else {
+            "RCON not available".to_string()
         };
 
         return HttpResponse::Ok().json(SuccessBody {
@@ -261,33 +266,35 @@ pub async fn upload_plugin(
         });
     }
 
-    HttpResponse::BadRequest().json(ErrorBody {
-        error: "No file provided".to_string(),
-    })
+    HttpResponse::BadRequest().json(ErrorBody { error: "No file provided".to_string() })
 }
 
-/// DELETE /api/plugins/{name} - unload and delete a plugin.
+/// DELETE /api/servers/{server_id}/plugins/{name}
 pub async fn delete_plugin(
-    name: web::Path<String>,
-    config: web::Data<AppConfig>,
-    rcon: web::Data<Arc<RconClient>>,
+    path: web::Path<(String, String)>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
+    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
 ) -> HttpResponse {
-    let plugin_file = PathBuf::from(&config.paths.oxide_plugins)
-        .join(format!("{}.cs", name.as_ref()));
+    let (server_id, name) = path.into_inner();
+    let (plugins_dir_str, _) = match get_server_paths(&server_id, &server_configs) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let plugin_file = PathBuf::from(&plugins_dir_str).join(format!("{}.cs", name));
 
     if !plugin_file.exists() {
-        return HttpResponse::NotFound().json(ErrorBody {
-            error: format!("Plugin '{}' not found", name),
-        });
+        return HttpResponse::NotFound().json(ErrorBody { error: format!("Plugin '{}' not found", name) });
     }
 
-    // Unload via RCON first
-    let unload_result = match rcon.oxide_unload(name.as_ref()).await {
-        Ok(msg) => msg,
-        Err(e) => format!("Unload failed (server may be offline): {}", e),
+    let unload_result = if let Some(rcon) = rcon_clients.get(&server_id) {
+        match rcon.oxide_unload(&name).await {
+            Ok(msg) => msg,
+            Err(e) => format!("Unload failed (server may be offline): {}", e),
+        }
+    } else {
+        "RCON not available".to_string()
     };
 
-    // Delete the file
     if let Err(e) = std::fs::remove_file(&plugin_file) {
         return HttpResponse::InternalServerError().json(ErrorBody {
             error: format!("Failed to delete plugin file: {}", e),
@@ -300,12 +307,18 @@ pub async fn delete_plugin(
     })
 }
 
-/// POST /api/plugins/{name}/reload - reload a plugin via RCON.
+/// POST /api/servers/{server_id}/plugins/{name}/reload
 pub async fn reload_plugin(
-    name: web::Path<String>,
-    rcon: web::Data<Arc<RconClient>>,
+    path: web::Path<(String, String)>,
+    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
 ) -> HttpResponse {
-    match rcon.oxide_reload(name.as_ref()).await {
+    let (server_id, name) = path.into_inner();
+    let rcon = match rcon_clients.get(&server_id) {
+        Some(r) => r,
+        None => return HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }),
+    };
+
+    match rcon.oxide_reload(&name).await {
         Ok(msg) => HttpResponse::Ok().json(SuccessBody {
             success: true,
             message: format!("Plugin '{}' reloaded: {}", name, msg),
@@ -316,36 +329,7 @@ pub async fn reload_plugin(
     }
 }
 
-/// uMod search result.
-#[derive(Debug, Serialize, Deserialize)]
-struct UmodSearchResult {
-    #[serde(default)]
-    data: Vec<UmodPlugin>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UmodPlugin {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    author: String,
-    #[serde(default)]
-    version: String,
-    #[serde(default)]
-    download_url: String,
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    icon_url: String,
-    #[serde(default)]
-    latest_release_at: String,
-    #[serde(default)]
-    downloads: u64,
-}
-
-/// GET /api/plugins/umod/search?q= - search the uMod marketplace.
+/// GET /api/plugins/umod/search - global, not per-server
 pub async fn umod_search(
     query: web::Query<UmodSearchQuery>,
 ) -> HttpResponse {
@@ -370,13 +354,18 @@ pub async fn umod_search(
     }
 }
 
-/// POST /api/plugins/umod/install - download a plugin from uMod.
+/// POST /api/servers/{server_id}/plugins/umod/install
 pub async fn umod_install(
+    server_id: web::Path<String>,
     body: web::Json<UmodInstallBody>,
-    config: web::Data<AppConfig>,
-    rcon: web::Data<Arc<RconClient>>,
+    server_configs: web::Data<Vec<GameServerConfig>>,
+    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
 ) -> HttpResponse {
-    let plugins_dir = PathBuf::from(&config.paths.oxide_plugins);
+    let (plugins_dir_str, _) = match get_server_paths(&server_id, &server_configs) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let plugins_dir = PathBuf::from(&plugins_dir_str);
 
     if !plugins_dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&plugins_dir) {
@@ -386,14 +375,10 @@ pub async fn umod_install(
         }
     }
 
-    // Validate filename
     if !body.filename.ends_with(".cs") {
-        return HttpResponse::BadRequest().json(ErrorBody {
-            error: "Filename must end with .cs".to_string(),
-        });
+        return HttpResponse::BadRequest().json(ErrorBody { error: "Filename must end with .cs".to_string() });
     }
 
-    // Download the plugin
     let client = reqwest::Client::new();
     match client.get(&body.url).send().await {
         Ok(response) => {
@@ -408,18 +393,18 @@ pub async fn umod_install(
 
                     let plugin_name = plugin_name_from_file(&body.filename);
 
-                    // Load via RCON
-                    let load_result = match rcon.oxide_load(&plugin_name).await {
-                        Ok(msg) => msg,
-                        Err(e) => format!("Load failed (server may be offline): {}", e),
+                    let load_result = if let Some(rcon) = rcon_clients.get(server_id.as_str()) {
+                        match rcon.oxide_load(&plugin_name).await {
+                            Ok(msg) => msg,
+                            Err(e) => format!("Load failed (server may be offline): {}", e),
+                        }
+                    } else {
+                        "RCON not available".to_string()
                     };
 
                     HttpResponse::Ok().json(SuccessBody {
                         success: true,
-                        message: format!(
-                            "Plugin '{}' installed from uMod. Load: {}",
-                            plugin_name, load_result
-                        ),
+                        message: format!("Plugin '{}' installed from uMod. Load: {}", plugin_name, load_result),
                     })
                 }
                 Err(e) => HttpResponse::InternalServerError().json(ErrorBody {
@@ -433,7 +418,6 @@ pub async fn umod_install(
     }
 }
 
-/// Simple URL encoding for query parameters.
 fn urlencoded(s: &str) -> String {
     s.chars()
         .map(|c| match c {

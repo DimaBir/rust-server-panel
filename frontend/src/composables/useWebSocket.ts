@@ -1,6 +1,6 @@
 import { ref, onUnmounted } from 'vue'
 
-export function useWebSocket(url: string) {
+export function useWebSocket(serverId: string, channel: string = 'console') {
   const messages = ref<string[]>([])
   const connected = ref(false)
   const error = ref<string | null>(null)
@@ -13,7 +13,8 @@ export function useWebSocket(url: string) {
     if (ws && ws.readyState === WebSocket.OPEN) return
 
     const token = localStorage.getItem('jwt_token')
-    const wsUrl = token ? `${url}?token=${token}` : url
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/ws/${serverId}/${channel}${token ? `?token=${token}` : ''}`
 
     ws = new WebSocket(wsUrl)
 

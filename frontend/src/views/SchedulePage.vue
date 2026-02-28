@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import api from '../services/api'
+import { useServerStore } from '../stores/server'
 import type { ScheduledJob } from '../types'
 
+const serverStore = useServerStore()
 const loading = ref(true)
 const jobs = ref<ScheduledJob[]>([])
 
@@ -13,20 +15,26 @@ const isNewJob = ref(false)
 const saving = ref(false)
 const deleteTarget = ref<ScheduledJob | null>(null)
 
+const activeServerId = computed(() => serverStore.activeServerId ?? '')
+
 const headers = [
   { title: 'Name', key: 'name' },
   { title: 'Schedule', key: 'schedule' },
-  { title: 'Action', key: 'action' },
+  { title: 'Type', key: 'jobType' },
+  { title: 'Server', key: 'serverId' },
   { title: 'Status', key: 'enabled' },
   { title: 'Actions', key: 'actions', sortable: false },
 ]
 
-const actionTypes = [
-  { title: 'Console Command', value: 'command' },
+const jobTypes = [
+  { title: 'RCON Command', value: 'rcon_command' },
   { title: 'Restart Server', value: 'restart' },
+  { title: 'Update Server', value: 'update' },
+  { title: 'Backup', value: 'backup' },
   { title: 'Save World', value: 'save' },
-  { title: 'Broadcast Message', value: 'broadcast' },
+  { title: 'Announce', value: 'announce' },
   { title: 'Wipe Map', value: 'wipe_map' },
+  { title: 'Wipe Full', value: 'wipe_full' },
 ]
 
 const schedulePresets = [
@@ -38,11 +46,17 @@ const schedulePresets = [
   { label: 'Every 30 min', value: '*/30 * * * *' },
 ]
 
+// Filter to show jobs for active server
+const filteredJobs = computed(() => {
+  if (!activeServerId.value) return jobs.value
+  return jobs.value.filter((j) => j.serverId === activeServerId.value)
+})
+
 async function fetchJobs() {
   loading.value = true
   try {
-    const res = await api.get<{ jobs: ScheduledJob[] }>('/schedule')
-    jobs.value = res.data.jobs ?? []
+    const res = await api.get<ScheduledJob[]>('/schedule')
+    jobs.value = res.data ?? []
   } catch {
     jobs.value = []
   } finally {
@@ -54,16 +68,17 @@ function openNewJob() {
   editingJob.value = {
     name: '',
     schedule: '',
-    action: 'command',
-    params: {},
+    jobType: 'rcon_command',
+    payload: '',
     enabled: true,
+    serverId: activeServerId.value,
   }
   isNewJob.value = true
   editDialog.value = true
 }
 
 function openEditJob(job: ScheduledJob) {
-  editingJob.value = { ...job, params: { ...job.params } }
+  editingJob.value = { ...job }
   isNewJob.value = false
   editDialog.value = true
 }
@@ -78,20 +93,15 @@ async function saveJob() {
     }
     editDialog.value = false
     await fetchJobs()
-  } catch {
-    // Error handled by interceptor
-  } finally {
-    saving.value = false
-  }
+  } catch { /* interceptor */ }
+  finally { saving.value = false }
 }
 
 async function toggleJob(job: ScheduledJob) {
   try {
     await api.post(`/schedule/${job.id}/toggle`)
     job.enabled = !job.enabled
-  } catch {
-    // Error handled by interceptor
-  }
+  } catch { /* interceptor */ }
 }
 
 function confirmDelete(job: ScheduledJob) {
@@ -106,212 +116,93 @@ async function executeDelete() {
     deleteDialog.value = false
     deleteTarget.value = null
     await fetchJobs()
-  } catch {
-    // Error handled by interceptor
-  }
+  } catch { /* interceptor */ }
 }
 
 function applyPreset(preset: string) {
   editingJob.value.schedule = preset
 }
 
-function actionLabel(value: string): string {
-  return actionTypes.find((a) => a.value === value)?.title ?? value
+function jobTypeLabel(value: string): string {
+  return jobTypes.find((a) => a.value === value)?.title ?? value
 }
 
-function getParamValue(key: string): string {
-  return editingJob.value.params?.[key] ?? ''
+function serverName(id: string): string {
+  return serverStore.servers.find((s) => s.id === id)?.name ?? id
 }
 
-function setParamValue(key: string, value: string) {
-  if (!editingJob.value.params) {
-    editingJob.value.params = {}
-  }
-  editingJob.value.params[key] = value
-}
+watch(() => serverStore.activeServerId, () => { fetchJobs() })
 
-onMounted(() => {
-  fetchJobs()
-})
+onMounted(() => { fetchJobs() })
 </script>
 
 <template>
   <div>
     <div class="d-flex align-center mb-4">
-      <div class="text-h5 font-weight-bold">Scheduled Tasks</div>
+      <div class="text-h6 font-weight-medium" style="color: #e2e8f0;">Scheduled Tasks</div>
       <v-spacer />
-      <v-btn
-        color="primary"
-        prepend-icon="mdi-plus"
-        size="small"
-        @click="openNewJob"
-      >
-        Add Task
-      </v-btn>
+      <v-btn color="primary" prepend-icon="mdi-plus" size="small" @click="openNewJob">Add Task</v-btn>
     </div>
 
     <v-card>
       <v-card-text>
-        <v-data-table
-          :headers="headers"
-          :items="jobs"
-          :loading="loading"
-          item-key="id"
-          class="elevation-0"
-          density="comfortable"
-        >
-          <template #item.action="{ item }">
-            <v-chip size="small" variant="tonal" color="info">
-              {{ actionLabel(item.action) }}
-            </v-chip>
+        <v-data-table :headers="headers" :items="filteredJobs" :loading="loading" item-key="id" class="elevation-0" density="comfortable">
+          <template #item.jobType="{ item }">
+            <v-chip size="small" variant="tonal" color="info">{{ jobTypeLabel(item.jobType) }}</v-chip>
+          </template>
+          <template #item.serverId="{ item }">
+            <span class="text-medium-emphasis">{{ serverName(item.serverId) }}</span>
           </template>
           <template #item.enabled="{ item }">
-            <v-switch
-              :model-value="item.enabled"
-              color="success"
-              density="compact"
-              hide-details
-              @update:model-value="toggleJob(item)"
-            />
+            <v-switch :model-value="item.enabled" color="success" density="compact" hide-details @update:model-value="toggleJob(item)" />
           </template>
           <template #item.actions="{ item }">
-            <v-btn
-              icon="mdi-pencil"
-              size="small"
-              variant="text"
-              color="info"
-              title="Edit"
-              @click="openEditJob(item)"
-            />
-            <v-btn
-              icon="mdi-delete"
-              size="small"
-              variant="text"
-              color="error"
-              title="Delete"
-              @click="confirmDelete(item)"
-            />
+            <v-btn icon="mdi-pencil" size="small" variant="text" color="medium-emphasis" @click="openEditJob(item)" />
+            <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="confirmDelete(item)" />
           </template>
           <template #no-data>
-            <div class="text-center pa-8 text-grey">
-              <v-icon size="48" color="grey" class="mb-2">mdi-clock-outline</v-icon>
+            <div class="text-center pa-8 text-medium-emphasis">
+              <v-icon size="48" class="mb-2">mdi-clock-outline</v-icon>
               <div>No scheduled tasks</div>
-              <v-btn
-                color="primary"
-                variant="tonal"
-                size="small"
-                class="mt-3"
-                prepend-icon="mdi-plus"
-                @click="openNewJob"
-              >
-                Create First Task
-              </v-btn>
+              <v-btn color="primary" variant="tonal" size="small" class="mt-3" prepend-icon="mdi-plus" @click="openNewJob">Create First Task</v-btn>
             </div>
           </template>
         </v-data-table>
       </v-card-text>
     </v-card>
 
-    <!-- Add/Edit Dialog -->
     <v-dialog v-model="editDialog" max-width="600">
       <v-card>
-        <v-card-title>
-          {{ isNewJob ? 'New Scheduled Task' : 'Edit Scheduled Task' }}
-        </v-card-title>
+        <v-card-title class="text-h6 font-weight-medium">{{ isNewJob ? 'New Scheduled Task' : 'Edit Scheduled Task' }}</v-card-title>
         <v-card-text>
-          <v-text-field
-            v-model="editingJob.name"
-            label="Task Name"
-            placeholder="Daily restart"
-            class="mb-3"
-            hide-details
-          />
-
-          <v-text-field
-            v-model="editingJob.schedule"
-            label="Cron Schedule"
-            placeholder="0 4 * * *"
-            hint="minute hour day month weekday"
-            persistent-hint
-            class="mb-2"
-          />
+          <v-text-field v-model="editingJob.name" label="Task Name" placeholder="Daily restart" class="mb-3" hide-details />
+          <v-text-field v-model="editingJob.schedule" label="Cron Schedule" placeholder="0 4 * * *" hint="minute hour day month weekday" persistent-hint class="mb-2" />
 
           <div class="d-flex flex-wrap ga-1 mb-4">
-            <v-btn
-              v-for="preset in schedulePresets"
-              :key="preset.value"
-              size="x-small"
-              variant="tonal"
-              color="primary"
-              @click="applyPreset(preset.value)"
-            >
-              {{ preset.label }}
-            </v-btn>
+            <v-btn v-for="preset in schedulePresets" :key="preset.value" size="x-small" variant="tonal" color="primary" @click="applyPreset(preset.value)">{{ preset.label }}</v-btn>
           </div>
 
-          <v-select
-            v-model="editingJob.action"
-            :items="actionTypes"
-            label="Action Type"
-            class="mb-3"
-            hide-details
-          />
+          <v-select v-model="editingJob.jobType" :items="jobTypes" label="Job Type" class="mb-3" hide-details />
 
-          <!-- Dynamic params based on action type -->
-          <template v-if="editingJob.action === 'command'">
-            <v-text-field
-              :model-value="getParamValue('command')"
-              label="Console Command"
-              placeholder="say Hello World!"
-              hide-details
-              @update:model-value="setParamValue('command', $event)"
-            />
+          <template v-if="editingJob.jobType === 'rcon_command'">
+            <v-text-field v-model="editingJob.payload" label="Console Command" placeholder="say Hello World!" hide-details />
           </template>
-
-          <template v-if="editingJob.action === 'broadcast'">
-            <v-text-field
-              :model-value="getParamValue('message')"
-              label="Broadcast Message"
-              placeholder="Server restarting in 5 minutes..."
-              hide-details
-              @update:model-value="setParamValue('message', $event)"
-            />
-          </template>
-
-          <template v-if="editingJob.action === 'restart'">
-            <v-text-field
-              :model-value="getParamValue('delay')"
-              label="Delay (seconds)"
-              placeholder="0"
-              type="number"
-              hide-details
-              @update:model-value="setParamValue('delay', $event)"
-            />
+          <template v-if="editingJob.jobType === 'announce'">
+            <v-text-field v-model="editingJob.payload" label="Broadcast Message" placeholder="Server restarting in 5 minutes..." hide-details />
           </template>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="editDialog = false">Cancel</v-btn>
-          <v-btn
-            color="primary"
-            variant="flat"
-            :loading="saving"
-            :disabled="!editingJob.name || !editingJob.schedule || !editingJob.action"
-            @click="saveJob"
-          >
-            {{ isNewJob ? 'Create' : 'Save' }}
-          </v-btn>
+          <v-btn color="primary" variant="flat" :loading="saving" :disabled="!editingJob.name || !editingJob.schedule || !editingJob.jobType" @click="saveJob">{{ isNewJob ? 'Create' : 'Save' }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
 
-    <!-- Delete Confirmation -->
     <v-dialog v-model="deleteDialog" max-width="400">
       <v-card>
-        <v-card-title>Delete Scheduled Task</v-card-title>
-        <v-card-text>
-          Are you sure you want to delete <strong>{{ deleteTarget?.name }}</strong>?
-        </v-card-text>
+        <v-card-title class="text-h6 font-weight-medium">Delete Scheduled Task</v-card-title>
+        <v-card-text>Are you sure you want to delete <strong>{{ deleteTarget?.name }}</strong>?</v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="deleteDialog = false">Cancel</v-btn>

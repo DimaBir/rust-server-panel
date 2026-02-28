@@ -2,6 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::Message;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 
@@ -17,34 +18,35 @@ pub struct WsTokenQuery {
 
 /// Combined stats payload pushed over the monitor WebSocket.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MonitorPayload {
     system: Option<SystemSnapshot>,
     game: Option<GameSnapshot>,
 }
 
-/// GET /ws/console - RCON bridge WebSocket.
-///
-/// Accepts a WebSocket upgrade with JWT auth via `?token=` query param.
-/// Text messages from the browser are forwarded to RCON as commands,
-/// and RCON responses are sent back to the browser.
+/// GET /ws/{server_id}/console
 pub async fn ws_console(
     req: HttpRequest,
     stream: web::Payload,
+    path: web::Path<String>,
     query: web::Query<WsTokenQuery>,
     config: web::Data<AppConfig>,
-    rcon: web::Data<Arc<RconClient>>,
+    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    // Validate JWT from query param
+    let server_id = path.into_inner();
+
     if let Err(e) = validate_token(&query.token, &config.auth.jwt_secret) {
         tracing::debug!("WebSocket console auth failed: {}", e);
         return Ok(HttpResponse::Unauthorized().body("Invalid or expired token"));
     }
 
+    let rcon = match rcon_clients.get(&server_id) {
+        Some(r) => r.clone(),
+        None => return Ok(HttpResponse::NotFound().body("Server not found")),
+    };
+
     let (response, mut session, mut msg_stream) = actix_ws::handle(&req, stream)?;
 
-    let rcon = rcon.into_inner().clone();
-
-    // Spawn a task to handle incoming messages
     actix_web::rt::spawn(async move {
         while let Some(Ok(msg)) = msg_stream.next().await {
             match msg {
@@ -85,30 +87,32 @@ pub async fn ws_console(
     Ok(response)
 }
 
-/// GET /ws/monitor - Live stats push WebSocket.
-///
-/// Accepts a WebSocket upgrade with JWT auth via `?token=` query param.
-/// Every 5 seconds, pushes JSON with the latest system and game stats.
+/// GET /ws/{server_id}/monitor
 pub async fn ws_monitor(
     req: HttpRequest,
     stream: web::Payload,
+    path: web::Path<String>,
     query: web::Query<WsTokenQuery>,
     config: web::Data<AppConfig>,
     sys_monitor: web::Data<Arc<SystemMonitor>>,
-    game_monitor: web::Data<Arc<GameMonitor>>,
+    game_monitors: web::Data<HashMap<String, Arc<GameMonitor>>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    // Validate JWT from query param
+    let server_id = path.into_inner();
+
     if let Err(e) = validate_token(&query.token, &config.auth.jwt_secret) {
         tracing::debug!("WebSocket monitor auth failed: {}", e);
         return Ok(HttpResponse::Unauthorized().body("Invalid or expired token"));
     }
 
+    let game_monitor = match game_monitors.get(&server_id) {
+        Some(m) => m.clone(),
+        None => return Ok(HttpResponse::NotFound().body("Server not found")),
+    };
+
     let (response, mut session, mut msg_stream) = actix_ws::handle(&req, stream)?;
 
     let sys_monitor = sys_monitor.into_inner().clone();
-    let game_monitor = game_monitor.into_inner().clone();
 
-    // Spawn a task that pushes stats every 5 seconds
     actix_web::rt::spawn(async move {
         let mut tick = interval(Duration::from_secs(5));
 
