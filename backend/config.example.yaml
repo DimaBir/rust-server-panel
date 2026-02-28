@@ -1,0 +1,27 @@
+server:
+  host: "0.0.0.0"
+  port: 8443
+
+rcon:
+  host: "127.0.0.1"
+  port: 28016
+  password: "changeme"
+
+auth:
+  admin_username: "admin"
+  # Generate with: cargo run -- --hash-password
+  password_hash: "$2b$12$LJ3m4ys9Z5D8K1gU9V4Ybu3YPVOaHBYKHFMjNnFk0J8DW4hMxTxWe"
+  jwt_secret: "change-this-to-a-random-string-in-production"
+
+paths:
+  lgsm_script: "/home/rustserver/rustserver"
+  server_files: "/home/rustserver/serverfiles"
+  oxide_plugins: "/home/rustserver/serverfiles/oxide/plugins"
+  oxide_config: "/home/rustserver/serverfiles/oxide/config"
+  server_cfg: "/home/rustserver/serverfiles/server/rustserver/cfg/server.cfg"
+  server_log: "/home/rustserver/log/console/rustserver-console.log"
+  base_dir: "/home/rustserver"
+
+monitor:
+  poll_interval_secs: 5
+  history_size: 720
