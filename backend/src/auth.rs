@@ -181,9 +181,10 @@ where
         Box::pin(async move {
             let path = req.path().to_string();
 
-            // Skip auth for login endpoint and WebSocket upgrade requests
+            // Skip auth for login endpoint, WebSocket upgrades, and static files
             let is_public = path == "/api/auth/login"
-                || path.starts_with("/ws/");
+                || path.starts_with("/ws/")
+                || !path.starts_with("/api/");
 
             if is_public {
                 return service.call(req).await;

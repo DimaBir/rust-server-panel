@@ -10,6 +10,7 @@ mod scheduler;
 mod websocket;
 
 use actix_cors::Cors;
+use actix_files::Files;
 use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
 
@@ -141,6 +142,19 @@ async fn main() -> anyhow::Result<()> {
             // WebSocket routes
             .route("/ws/console", web::get().to(websocket::ws_console))
             .route("/ws/monitor", web::get().to(websocket::ws_monitor))
+            // Static files (Vue frontend) — must be last
+            .service(
+                Files::new("/", "./static")
+                    .index_file("index.html")
+                    .default_handler(
+                        actix_web::dev::fn_service(|req: actix_web::dev::ServiceRequest| async {
+                            let (req, _) = req.into_parts();
+                            let file = actix_files::NamedFile::open_async("./static/index.html").await?;
+                            let res = file.into_response(&req);
+                            Ok(actix_web::dev::ServiceResponse::new(req, res))
+                        }),
+                    ),
+            )
     })
     .bind(format!("{}:{}", bind_host, bind_port))?
     .shutdown_timeout(10)
