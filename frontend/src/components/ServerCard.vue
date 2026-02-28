@@ -8,6 +8,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   click: []
   delete: []
+  logs: []
 }>()
 
 const isProvisioning = ['installing', 'downloading', 'installing_oxide', 'configuring'].includes(props.server.provisioningStatus)
@@ -30,13 +31,21 @@ function statusColor(): string {
   if (props.server.online) return '#10b981'
   return '#64748b'
 }
+
+function handleClick() {
+  if (isProvisioning || isError) {
+    emit('logs')
+  } else {
+    emit('click')
+  }
+}
 </script>
 
 <template>
   <v-card
     class="server-card fill-height d-flex flex-column"
-    :style="{ cursor: isProvisioning ? 'default' : 'pointer' }"
-    @click="!isProvisioning && emit('click')"
+    style="cursor: pointer;"
+    @click="handleClick"
   >
     <v-card-text class="flex-grow-1 pa-4">
       <div class="d-flex align-center mb-3">
@@ -55,10 +64,12 @@ function statusColor(): string {
       <template v-if="isProvisioning">
         <v-progress-linear indeterminate color="warning" class="mb-2" rounded />
         <div class="text-caption text-medium-emphasis">{{ statusLabel(server.provisioningStatus) }}</div>
+        <div class="text-caption text-medium-emphasis mt-1" style="opacity: 0.6;">Click to view logs</div>
       </template>
 
       <template v-else-if="isError">
         <div class="text-caption" style="color: #ef4444;">{{ statusLabel(server.provisioningStatus) }}</div>
+        <div class="text-caption text-medium-emphasis mt-1" style="opacity: 0.6;">Click to view logs</div>
       </template>
 
       <template v-else>

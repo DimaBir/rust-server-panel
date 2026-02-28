@@ -68,15 +68,21 @@ pub async fn provision_server(
 
     match download_result {
         Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().is_empty() {
+                update_status(&registry, &server_id, ProvisioningStatus::Installing, &format!("LinuxGSM output: {}", stdout.trim())).await;
+            }
             update_status(&registry, &server_id, ProvisioningStatus::Installing, "LinuxGSM installed").await;
         }
         Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
             update_status(
                 &registry,
                 &server_id,
                 ProvisioningStatus::Error,
-                &format!("LinuxGSM install failed: {}", stderr),
+                &format!("LinuxGSM install failed (exit code {})\nSTDOUT: {}\nSTDERR: {}", exit_code, stdout.trim(), stderr.trim()),
             )
             .await;
             return;
@@ -109,11 +115,12 @@ pub async fn provision_server(
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
             update_status(
                 &registry,
                 &server_id,
                 ProvisioningStatus::Error,
-                &format!("Server install failed: {} {}", stdout, stderr),
+                &format!("Server install failed (exit code {})\nSTDOUT: {}\nSTDERR: {}", exit_code, stdout.trim(), stderr.trim()),
             )
             .await;
             return;
