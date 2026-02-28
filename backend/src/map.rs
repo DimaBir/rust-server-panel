@@ -55,14 +55,18 @@ pub async fn get_map_info(
 
     // Try to get live seed/worldSize from RCON convar queries
     let (seed, world_size) = if let Some(rcon) = registry.get_rcon(&server_id).await {
-        let seed = rcon.execute("server.seed").await.ok()
-            .and_then(|s| s.trim().trim_matches('"').parse::<u32>().ok())
-            .filter(|&s| s > 0)
-            .unwrap_or(def.seed);
-        let ws = rcon.execute("server.worldsize").await.ok()
-            .and_then(|s| s.trim().trim_matches('"').parse::<u32>().ok())
-            .filter(|&s| s > 0)
-            .unwrap_or(def.world_size);
+        let seed_raw = rcon.execute("server.seed").await.unwrap_or_default();
+        let ws_raw = rcon.execute("server.worldsize").await.unwrap_or_default();
+        tracing::info!("RCON server.seed raw: {:?}", seed_raw);
+        tracing::info!("RCON server.worldsize raw: {:?}", ws_raw);
+        // Response format may be 'server.seed: "12345"' or just '"12345"'
+        let parse_convar = |raw: &str| -> Option<u32> {
+            raw.rsplit(':').next()
+                .map(|s| s.trim().trim_matches('"').trim())
+                .and_then(|s| s.parse::<u32>().ok())
+        };
+        let seed = parse_convar(&seed_raw).filter(|&s| s > 0).unwrap_or(def.seed);
+        let ws = parse_convar(&ws_raw).filter(|&s| s > 0).unwrap_or(def.world_size);
         (seed, ws)
     } else {
         (def.seed, def.world_size)
