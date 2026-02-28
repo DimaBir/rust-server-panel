@@ -173,12 +173,26 @@ impl RconClient {
         inner: Arc<Mutex<RconInner>>,
     ) {
         while let Some(msg) = stream.next().await {
+            match &msg {
+                Ok(m) => tracing::debug!("RCON WS frame: {:?}", m),
+                Err(e) => tracing::debug!("RCON WS error frame: {:?}", e),
+            }
             match msg {
                 Ok(Message::Text(text)) => {
                     if let Ok(response) = serde_json::from_str::<RconResponse>(&text) {
                         let mut guard = inner.lock().await;
                         if let Some(pending) = guard.pending.remove(&response.identifier) {
                             let _ = pending.sender.send(response.message);
+                        }
+                    }
+                }
+                Ok(Message::Binary(data)) => {
+                    if let Ok(text) = String::from_utf8(data.to_vec()) {
+                        if let Ok(response) = serde_json::from_str::<RconResponse>(&text) {
+                            let mut guard = inner.lock().await;
+                            if let Some(pending) = guard.pending.remove(&response.identifier) {
+                                let _ = pending.sender.send(response.message);
+                            }
                         }
                     }
                 }
@@ -194,6 +208,10 @@ impl RconClient {
             }
         }
         tracing::info!("RCON reader loop ended");
+        // Clear the sink so is_connected() returns false and triggers reconnect
+        let mut guard = inner.lock().await;
+        guard.sink = None;
+        guard.pending.clear();
     }
 
     /// Check if connected (has an active sink).
@@ -223,7 +241,9 @@ impl RconClient {
             let mut inner = self.inner.lock().await;
             inner.pending.insert(id, PendingRequest { sender: tx });
             if let Some(ref mut sink) = inner.sink {
+                tracing::info!("RCON sending command id={}: {}", id, cmd);
                 sink.send(Message::Text(json)).await?;
+                tracing::info!("RCON send complete, waiting for response id={}", id);
             } else {
                 anyhow::bail!("RCON not connected");
             }
