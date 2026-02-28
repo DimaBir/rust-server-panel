@@ -57,8 +57,6 @@ pub async fn get_map_info(
     let (seed, world_size) = if let Some(rcon) = registry.get_rcon(&server_id).await {
         let seed_raw = rcon.execute("server.seed").await.unwrap_or_default();
         let ws_raw = rcon.execute("server.worldsize").await.unwrap_or_default();
-        tracing::info!("RCON server.seed raw: {:?}", seed_raw);
-        tracing::info!("RCON server.worldsize raw: {:?}", ws_raw);
         // Response format may be 'server.seed: "12345"' or just '"12345"'
         let parse_convar = |raw: &str| -> Option<u32> {
             raw.rsplit(':').next()
