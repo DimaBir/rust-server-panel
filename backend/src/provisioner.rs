@@ -8,6 +8,9 @@ use crate::registry::{
     ProvisioningStatus, ServerDefinition, ServerRegistry, ServerRuntime, ServerSource, ServerType,
 };
 
+/// The non-root user that runs LinuxGSM commands inside the container.
+const GAME_USER: &str = "gameserver";
+
 /// Allocate the next free ports based on existing definitions.
 pub fn allocate_ports(
     existing: &[ServerDefinition],
@@ -29,6 +32,47 @@ pub fn allocate_ports(
     (game_port, rcon_port, query_port)
 }
 
+/// Helper: run a shell command as the game user and return (success, stdout, stderr).
+async fn run_as_user(cmd: &str) -> Result<std::process::Output, std::io::Error> {
+    tokio::process::Command::new("su")
+        .args(["-", GAME_USER, "-c", cmd])
+        .output()
+        .await
+}
+
+/// Format command output for logging.
+fn format_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut msg = format!("Exit code: {}", exit_code);
+    let stdout_trimmed = stdout.trim();
+    let stderr_trimmed = stderr.trim();
+    if !stdout_trimmed.is_empty() {
+        // Only include last 2000 chars to avoid huge log entries
+        let s = if stdout_trimmed.len() > 2000 {
+            &stdout_trimmed[stdout_trimmed.len() - 2000..]
+        } else {
+            stdout_trimmed
+        };
+        msg.push_str(&format!("\nSTDOUT: {}", s));
+    }
+    if !stderr_trimmed.is_empty() {
+        let s = if stderr_trimmed.len() > 2000 {
+            &stderr_trimmed[stderr_trimmed.len() - 2000..]
+        } else {
+            stderr_trimmed
+        };
+        msg.push_str(&format!("\nSTDERR: {}", s));
+    }
+    msg
+}
+
 /// Run the full provisioning pipeline for a new server.
 pub async fn provision_server(
     def: ServerDefinition,
@@ -40,8 +84,14 @@ pub async fn provision_server(
 
     tracing::info!("Starting provisioning for server '{}'", server_id);
 
-    // Step 1: Create directory and download LinuxGSM
-    update_status(&registry, &server_id, ProvisioningStatus::Installing, "Creating server directory...").await;
+    // Step 1: Create directory and set ownership
+    update_status(
+        &registry,
+        &server_id,
+        ProvisioningStatus::Installing,
+        "Creating server directory...",
+    )
+    .await;
 
     if let Err(e) = std::fs::create_dir_all(&base_dir) {
         update_status(
@@ -54,35 +104,55 @@ pub async fn provision_server(
         return;
     }
 
-    // Download linuxgsm.sh
-    let download_result = tokio::process::Command::new("bash")
-        .args([
-            "-c",
-            &format!(
-                "cd '{}' && curl -Lo linuxgsm.sh https://linuxgsm.sh && chmod +x linuxgsm.sh && bash linuxgsm.sh rustserver",
-                base_dir
-            ),
-        ])
+    // chown the directory to the game user
+    let chown_result = tokio::process::Command::new("chown")
+        .args(["-R", &format!("{}:{}", GAME_USER, GAME_USER), &base_dir])
         .output()
         .await;
 
+    if let Err(e) = chown_result {
+        update_status(
+            &registry,
+            &server_id,
+            ProvisioningStatus::Error,
+            &format!("Failed to chown directory: {}", e),
+        )
+        .await;
+        return;
+    }
+
+    // Step 1b: Download and set up LinuxGSM
+    update_status(
+        &registry,
+        &server_id,
+        ProvisioningStatus::Installing,
+        "Downloading LinuxGSM...",
+    )
+    .await;
+
+    let lgsm_cmd = format!(
+        "cd '{}' && curl -Lo linuxgsm.sh https://linuxgsm.sh && chmod +x linuxgsm.sh && bash linuxgsm.sh rustserver",
+        base_dir
+    );
+
+    let download_result = run_as_user(&lgsm_cmd).await;
+
     match download_result {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if !stdout.trim().is_empty() {
-                update_status(&registry, &server_id, ProvisioningStatus::Installing, &format!("LinuxGSM output: {}", stdout.trim())).await;
-            }
-            update_status(&registry, &server_id, ProvisioningStatus::Installing, "LinuxGSM installed").await;
+        Ok(ref output) if output.status.success() => {
+            update_status(
+                &registry,
+                &server_id,
+                ProvisioningStatus::Installing,
+                "LinuxGSM installed",
+            )
+            .await;
         }
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
+        Ok(ref output) => {
             update_status(
                 &registry,
                 &server_id,
                 ProvisioningStatus::Error,
-                &format!("LinuxGSM install failed (exit code {})\nSTDOUT: {}\nSTDERR: {}", exit_code, stdout.trim(), stderr.trim()),
+                &format!("LinuxGSM install failed\n{}", format_output(output)),
             )
             .await;
             return;
@@ -100,27 +170,33 @@ pub async fn provision_server(
     }
 
     // Step 2: Install the game server
-    update_status(&registry, &server_id, ProvisioningStatus::Downloading, "Downloading Rust server files (this may take a while)...").await;
+    update_status(
+        &registry,
+        &server_id,
+        ProvisioningStatus::Downloading,
+        "Downloading Rust server files (this may take a while)...",
+    )
+    .await;
 
-    let install_result = tokio::process::Command::new(format!("{}/rustserver", base_dir))
-        .arg("auto-install")
-        .current_dir(&base_dir)
-        .output()
-        .await;
+    let install_cmd = format!("cd '{}' && ./rustserver auto-install", base_dir);
+    let install_result = run_as_user(&install_cmd).await;
 
     match install_result {
-        Ok(output) if output.status.success() => {
-            update_status(&registry, &server_id, ProvisioningStatus::Downloading, "Game server files installed").await;
+        Ok(ref output) if output.status.success() => {
+            update_status(
+                &registry,
+                &server_id,
+                ProvisioningStatus::Downloading,
+                "Game server files installed",
+            )
+            .await;
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
+        Ok(ref output) => {
             update_status(
                 &registry,
                 &server_id,
                 ProvisioningStatus::Error,
-                &format!("Server install failed (exit code {})\nSTDOUT: {}\nSTDERR: {}", exit_code, stdout.trim(), stderr.trim()),
+                &format!("Server install failed\n{}", format_output(output)),
             )
             .await;
             return;
@@ -139,31 +215,50 @@ pub async fn provision_server(
 
     // Step 3: Install Oxide (if modded)
     if def.server_type == ServerType::Modded {
-        update_status(&registry, &server_id, ProvisioningStatus::InstallingOxide, "Installing Oxide/uMod framework...").await;
+        update_status(
+            &registry,
+            &server_id,
+            ProvisioningStatus::InstallingOxide,
+            "Installing Oxide/uMod framework...",
+        )
+        .await;
 
-        let oxide_result = tokio::process::Command::new("bash")
-            .args([
-                "-c",
-                &format!(
-                    "cd '{}/serverfiles' && curl -Lo Oxide.Rust.zip https://umod.org/games/rust/download && unzip -o Oxide.Rust.zip && rm -f Oxide.Rust.zip",
-                    base_dir
-                ),
-            ])
-            .output()
-            .await;
+        let oxide_cmd = format!(
+            "cd '{}/serverfiles' && curl -Lo Oxide.Rust.zip https://umod.org/games/rust/download && unzip -o Oxide.Rust.zip && rm -f Oxide.Rust.zip",
+            base_dir
+        );
+        let oxide_result = run_as_user(&oxide_cmd).await;
 
         match oxide_result {
-            Ok(output) if output.status.success() => {
-                update_status(&registry, &server_id, ProvisioningStatus::InstallingOxide, "Oxide installed").await;
+            Ok(ref output) if output.status.success() => {
+                update_status(
+                    &registry,
+                    &server_id,
+                    ProvisioningStatus::InstallingOxide,
+                    "Oxide installed",
+                )
+                .await;
             }
             Ok(_) | Err(_) => {
-                update_status(&registry, &server_id, ProvisioningStatus::InstallingOxide, "Oxide install failed (non-fatal, continuing...)").await;
+                update_status(
+                    &registry,
+                    &server_id,
+                    ProvisioningStatus::InstallingOxide,
+                    "Oxide install failed (non-fatal, continuing...)",
+                )
+                .await;
             }
         }
     }
 
     // Step 4: Configure server.cfg
-    update_status(&registry, &server_id, ProvisioningStatus::Configuring, "Writing server configuration...").await;
+    update_status(
+        &registry,
+        &server_id,
+        ProvisioningStatus::Configuring,
+        "Writing server configuration...",
+    )
+    .await;
 
     let cfg_dir = format!("{}/serverfiles/server/rustserver/cfg", base_dir);
     let _ = std::fs::create_dir_all(&cfg_dir);
@@ -202,8 +297,20 @@ server.port {game_port}
         return;
     }
 
+    // chown cfg to game user
+    let _ = tokio::process::Command::new("chown")
+        .args(["-R", &format!("{}:{}", GAME_USER, GAME_USER), &cfg_dir])
+        .output()
+        .await;
+
     // Step 5: Mark as Ready and initialize runtime
-    update_status(&registry, &server_id, ProvisioningStatus::Ready, "Server provisioning complete!").await;
+    update_status(
+        &registry,
+        &server_id,
+        ProvisioningStatus::Ready,
+        "Server provisioning complete!",
+    )
+    .await;
 
     // Initialize runtime
     let game_server_config = def.to_game_server_config();
