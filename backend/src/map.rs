@@ -39,10 +39,42 @@ impl PositionStore {
     }
 }
 
+/// Cache for RustMaps image URLs (keyed by "size_seed").
+pub struct MapImageCache {
+    cache: RwLock<HashMap<String, String>>,
+}
+
+impl MapImageCache {
+    pub fn new() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+/// Fetch the map image URL from the RustMaps page HTML.
+async fn fetch_rustmaps_image_url(world_size: u32, seed: u32) -> Option<String> {
+    let page_url = format!("https://rustmaps.com/map/{}_{}", world_size, seed);
+    let html = reqwest::get(&page_url).await.ok()?.text().await.ok()?;
+    // Look for the map_icons.png URL in the HTML
+    // Pattern: https://content.rustmaps.com/maps/{ver}/{hash}/map_icons.png
+    for segment in html.split("https://content.rustmaps.com/maps/") {
+        if let Some(end) = segment.find("/map_icons.png") {
+            let path = &segment[..end];
+            return Some(format!(
+                "https://content.rustmaps.com/maps/{}/map_icons.png",
+                path
+            ));
+        }
+    }
+    None
+}
+
 /// GET /api/servers/{server_id}/map
 pub async fn get_map_info(
     server_id: web::Path<String>,
     registry: web::Data<Arc<ServerRegistry>>,
+    map_cache: web::Data<Arc<MapImageCache>>,
 ) -> HttpResponse {
     let def = match registry.get_definition(&server_id).await {
         Some(d) => d,
@@ -57,7 +89,6 @@ pub async fn get_map_info(
     let (seed, world_size) = if let Some(rcon) = registry.get_rcon(&server_id).await {
         let seed_raw = rcon.execute("server.seed").await.unwrap_or_default();
         let ws_raw = rcon.execute("server.worldsize").await.unwrap_or_default();
-        // Response format may be 'server.seed: "12345"' or just '"12345"'
         let parse_convar = |raw: &str| -> Option<u32> {
             raw.rsplit(':').next()
                 .map(|s| s.trim().trim_matches('"').trim())
@@ -70,10 +101,26 @@ pub async fn get_map_info(
         (def.seed, def.world_size)
     };
 
-    let image_url = format!(
-        "https://content.rustmaps.com/maps/{}_{}/map_icons.png",
-        world_size, seed
-    );
+    // Look up cached image URL or fetch from RustMaps
+    let cache_key = format!("{}_{}", world_size, seed);
+    let image_url = {
+        let cache = map_cache.cache.read().await;
+        cache.get(&cache_key).cloned()
+    };
+
+    let image_url = match image_url {
+        Some(url) => url,
+        None => {
+            let url = fetch_rustmaps_image_url(world_size, seed)
+                .await
+                .unwrap_or_default();
+            if !url.is_empty() {
+                let mut cache = map_cache.cache.write().await;
+                cache.insert(cache_key, url.clone());
+            }
+            url
+        }
+    };
 
     HttpResponse::Ok().json(serde_json::json!({
         "seed": seed,

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
-use crate::map::PositionStore;
+use crate::map::{MapImageCache, PositionStore};
 use crate::monitor::SystemMonitor;
 use crate::registry::{
     ServerDefinition, ServerRegistry, ServerRuntime, ServerSource, ProvisioningStatus,
@@ -134,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
     // Position store for live map
     let position_store = Arc::new(PositionStore::new());
 
+    // Map image URL cache
+    let map_image_cache = Arc::new(MapImageCache::new());
+
     let bind_host = config.panel.host.clone();
     let bind_port = config.panel.port;
 
@@ -166,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(web::Data::new(scheduler.clone()))
             .app_data(web::Data::new(registry.clone()))
             .app_data(web::Data::new(position_store.clone()))
+            .app_data(web::Data::new(map_image_cache.clone()))
             // Auth routes (global)
             .route("/api/auth/login", web::post().to(auth::login))
             .route("/api/auth/me", web::get().to(auth::me))
