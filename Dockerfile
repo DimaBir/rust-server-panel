@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Build Rust backend
-FROM rust:latest AS backend-builder
+FROM rust:bookworm AS backend-builder
 WORKDIR /app/backend
 COPY backend/Cargo.toml backend/Cargo.lock* ./
 # Create dummy main to cache dependencies
