@@ -245,6 +245,14 @@ pub async fn delete_server(
         });
     }
 
+    // Stop the game server via LGSM before cleanup
+    let base_dir = format!("{}/rustserver-{}", def.base_path, def.id);
+    let stop_cmd = format!("cd '{}' && ./rustserver stop 2>/dev/null || true", base_dir);
+    let _ = tokio::process::Command::new("su")
+        .args(["-", "gameserver", "-c", &stop_cmd])
+        .output()
+        .await;
+
     // Remove runtime (stop collector)
     {
         let mut runtimes = registry.runtimes.write().await;
@@ -274,9 +282,17 @@ pub async fn delete_server(
         }
     }
 
+    // Remove server files from disk
+    if std::path::Path::new(&base_dir).exists() {
+        tracing::info!("Removing server files at '{}'", base_dir);
+        if let Err(e) = tokio::fs::remove_dir_all(&base_dir).await {
+            tracing::error!("Failed to remove server files at '{}': {}", base_dir, e);
+        }
+    }
+
     HttpResponse::Ok().json(SuccessBody {
         success: true,
-        message: format!("Server '{}' deleted", server_id),
+        message: format!("Server '{}' deleted and files removed", server_id),
     })
 }
 

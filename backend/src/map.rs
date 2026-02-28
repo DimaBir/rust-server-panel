@@ -53,12 +53,17 @@ pub async fn get_map_info(
         }
     };
 
-    // Try to get live seed/worldSize from RCON serverinfo
+    // Try to get live seed/worldSize from RCON convar queries
     let (seed, world_size) = if let Some(rcon) = registry.get_rcon(&server_id).await {
-        match rcon.server_info().await {
-            Ok(info) if info.seed > 0 => (info.seed, if info.world_size > 0 { info.world_size } else { def.world_size }),
-            _ => (def.seed, def.world_size),
-        }
+        let seed = rcon.execute("server.seed").await.ok()
+            .and_then(|s| s.trim().trim_matches('"').parse::<u32>().ok())
+            .filter(|&s| s > 0)
+            .unwrap_or(def.seed);
+        let ws = rcon.execute("server.worldsize").await.ok()
+            .and_then(|s| s.trim().trim_matches('"').parse::<u32>().ok())
+            .filter(|&s| s > 0)
+            .unwrap_or(def.world_size);
+        (seed, ws)
     } else {
         (def.seed, def.world_size)
     };
