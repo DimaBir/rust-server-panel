@@ -103,13 +103,13 @@ function handleKeyDown(e: KeyboardEvent) {
     e.preventDefault()
     if (historyIndex.value < commandHistory.value.length - 1) {
       historyIndex.value++
-      commandInput.value = commandHistory.value[historyIndex.value]
+      commandInput.value = commandHistory.value[historyIndex.value] ?? ''
     }
   } else if (e.key === 'ArrowDown') {
     e.preventDefault()
     if (historyIndex.value > 0) {
       historyIndex.value--
-      commandInput.value = commandHistory.value[historyIndex.value]
+      commandInput.value = commandHistory.value[historyIndex.value] ?? ''
     } else {
       historyIndex.value = -1
       commandInput.value = ''
