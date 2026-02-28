@@ -52,23 +52,19 @@ async function fetchData() {
     if (systemRes.status === 'fulfilled') {
       const current = systemRes.value.data.current
       if (current) {
-        cpuHistory.value.push(current.cpuPercent)
-        memHistory.value.push(current.memPercent)
-        if (cpuHistory.value.length > MAX_HISTORY) cpuHistory.value.shift()
-        if (memHistory.value.length > MAX_HISTORY) memHistory.value.shift()
+        cpuHistory.value = [...cpuHistory.value, current.cpuPercent].slice(-MAX_HISTORY)
+        memHistory.value = [...memHistory.value, current.memPercent].slice(-MAX_HISTORY)
       }
     }
     if (gameRes.status === 'fulfilled') {
       const current = gameRes.value.data.current
       if (current) {
-        playerHistory.value.push(current.players)
-        if (playerHistory.value.length > MAX_HISTORY) playerHistory.value.shift()
+        playerHistory.value = [...playerHistory.value, current.players].slice(-MAX_HISTORY)
       }
     }
 
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    timeLabels.value.push(now)
-    if (timeLabels.value.length > MAX_HISTORY) timeLabels.value.shift()
+    timeLabels.value = [...timeLabels.value, now].slice(-MAX_HISTORY)
   } catch {
     // Silent poll
   } finally {
@@ -134,7 +130,7 @@ const systemChartData = computed(() => ({
       fill: true,
       tension: 0.4,
       borderWidth: 2,
-      pointRadius: 0,
+      pointRadius: 2,
     },
     {
       label: 'Memory %',
@@ -144,7 +140,7 @@ const systemChartData = computed(() => ({
       fill: true,
       tension: 0.4,
       borderWidth: 2,
-      pointRadius: 0,
+      pointRadius: 2,
     },
   ],
 }))
@@ -160,7 +156,7 @@ const playerChartData = computed(() => ({
       fill: true,
       tension: 0.4,
       borderWidth: 2,
-      pointRadius: 0,
+      pointRadius: 2,
     },
   ],
 }))

@@ -83,15 +83,15 @@ pub async fn list_servers(registry: web::Data<Arc<ServerRegistry>>) -> HttpRespo
     let mut entries = Vec::new();
 
     for def in &defs {
-        let (online, players) = if let Some(monitor) = registry.get_game_monitor(&def.id).await {
+        let (online, players, live_max_players) = if let Some(monitor) = registry.get_game_monitor(&def.id).await {
             let history = monitor.history.read().await;
             if let Some(snap) = history.latest() {
-                (snap.online, Some(snap.players))
+                (snap.online, Some(snap.players), if snap.max_players > 0 { Some(snap.max_players) } else { None })
             } else {
-                (false, None)
+                (false, None, None)
             }
         } else {
-            (false, None)
+            (false, None, None)
         };
 
         entries.push(ServerListEntry {
@@ -102,7 +102,7 @@ pub async fn list_servers(registry: web::Data<Arc<ServerRegistry>>) -> HttpRespo
             game_port: def.game_port,
             rcon_port: def.rcon_port,
             query_port: def.query_port,
-            max_players: def.max_players,
+            max_players: live_max_players.unwrap_or(def.max_players),
             world_size: def.world_size,
             seed: def.seed,
             provisioning_status: status_to_string(&def.provisioning_status),

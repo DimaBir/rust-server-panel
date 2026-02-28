@@ -20,7 +20,7 @@ RUN touch src/main.rs && cargo build --release
 # Stage 3: Runtime
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 \
+    ca-certificates libssl3 curl unzip bash wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
