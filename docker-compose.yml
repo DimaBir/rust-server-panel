@@ -1,0 +1,15 @@
+services:
+  panel:
+    build: .
+    container_name: rust-server-panel
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      # Config file (create from config.example.yaml)
+      - ./config.yaml:/app/config.yaml:ro
+      # Access to game server files
+      - /home/rustserver:/home/rustserver
+      # Persist schedules
+      - ./data:/app/data
+    environment:
+      - RUST_LOG=info
