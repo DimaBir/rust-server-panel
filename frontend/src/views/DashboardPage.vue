@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -14,12 +14,14 @@ import {
 } from 'chart.js'
 import { serverApi } from '../services/api'
 import api from '../services/api'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 import type { ServerInfo, SystemStats, GameStats, MonitorResponse } from '../types'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler)
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const serverInfo = ref<ServerInfo | null>(null)
 const loading = ref(true)
 const confirmDialog = ref(false)
@@ -34,11 +36,9 @@ const MAX_HISTORY = 30
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
-
 async function fetchData() {
-  if (!activeServerId.value) return
-  const sApi = serverApi(activeServerId.value)
+  if (!serverId.value) return
+  const sApi = serverApi(serverId.value)
   try {
     const [statusRes, systemRes, gameRes] = await Promise.allSettled([
       sApi.get<ServerInfo>('/status'),
@@ -76,14 +76,6 @@ async function fetchData() {
   }
 }
 
-function resetHistory() {
-  cpuHistory.value = []
-  memHistory.value = []
-  playerHistory.value = []
-  timeLabels.value = []
-  loading.value = true
-}
-
 function showConfirm(title: string, text: string, action: () => void) {
   confirmAction.value = { title, text, action }
   confirmDialog.value = true
@@ -109,7 +101,7 @@ function handleQuickAction(action: typeof quickActions[0]) {
     `Are you sure you want to ${action.label.toLowerCase()} the server?`,
     async () => {
       try {
-        const sApi = serverApi(activeServerId.value)
+        const sApi = serverApi(serverId.value)
         await sApi.post(action.endpoint)
       } catch { /* interceptor */ }
     }
@@ -193,11 +185,6 @@ const chartOptions = {
     },
   },
 }
-
-watch(() => serverStore.activeServerId, () => {
-  resetHistory()
-  fetchData()
-})
 
 onMounted(() => {
   fetchData()

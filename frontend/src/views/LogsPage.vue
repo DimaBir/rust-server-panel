@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { serverApi } from '../services/api'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const logFile = ref('console')
 const lineCount = ref(100)
 const autoScroll = ref(true)
@@ -12,8 +14,6 @@ const loading = ref(true)
 const logLines = ref<string[]>([])
 const logOutputRef = ref<HTMLPreElement | null>(null)
 let refreshTimer: ReturnType<typeof setInterval> | null = null
-
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
 
 const logFiles = [
   { title: 'Console', value: 'console' },
@@ -28,9 +28,9 @@ const lineOptions = [
 ]
 
 async function fetchLogs() {
-  if (!activeServerId.value) return
+  if (!serverId.value) return
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     const res = await api.get<{ lines: string[] }>('/logs/tail', {
       params: { file: logFile.value, lines: lineCount.value },
     })
@@ -67,7 +67,6 @@ function clearLog() { logLines.value = [] }
 
 watch([logFile, lineCount], () => { loading.value = true; fetchLogs() })
 watch(autoRefresh, (val) => { if (val) startAutoRefresh(); else stopAutoRefresh() })
-watch(() => serverStore.activeServerId, () => { loading.value = true; fetchLogs() })
 
 onMounted(() => { fetchLogs(); startAutoRefresh() })
 onUnmounted(() => { stopAutoRefresh() })

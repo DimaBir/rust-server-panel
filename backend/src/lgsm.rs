@@ -1,13 +1,11 @@
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::config::GameServerConfig;
-use crate::monitor::{GameMonitor, SystemMonitor};
-use crate::rcon::RconClient;
+use crate::monitor::SystemMonitor;
+use crate::registry::ServerRegistry;
 
 /// Mutex to prevent concurrent LinuxGSM operations per server.
 pub struct LgsmLock {
@@ -61,10 +59,7 @@ pub struct WipeRequest {
 async fn run_lgsm_command(script: &str, action: &str) -> anyhow::Result<String> {
     tracing::info!("Running LGSM command: {} {}", script, action);
 
-    let output = Command::new(script)
-        .arg(action)
-        .output()
-        .await?;
+    let output = Command::new(script).arg(action).output().await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -76,54 +71,38 @@ async fn run_lgsm_command(script: &str, action: &str) -> anyhow::Result<String> 
     };
 
     if !output.status.success() {
-        tracing::warn!("LGSM command '{}' exited with status: {}", action, output.status);
+        tracing::warn!(
+            "LGSM command '{}' exited with status: {}",
+            action,
+            output.status
+        );
     }
 
     Ok(combined)
 }
 
-/// Helper: resolve per-server resources from path params and shared state maps.
-struct ServerResources {
-    config: GameServerConfig,
-    rcon: Arc<RconClient>,
-    lgsm_lock: Arc<LgsmLock>,
-}
-
-fn resolve_server(
-    server_id: &str,
-    server_configs: &web::Data<Vec<GameServerConfig>>,
-    rcon_clients: &web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: &web::Data<HashMap<String, Arc<LgsmLock>>>,
-) -> Result<ServerResources, HttpResponse> {
-    let config = server_configs
-        .iter()
-        .find(|s| s.id == server_id)
-        .cloned()
-        .ok_or_else(|| HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})))?;
-    let rcon = rcon_clients
-        .get(server_id)
-        .cloned()
-        .ok_or_else(|| HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})))?;
-    let lgsm_lock = lgsm_locks
-        .get(server_id)
-        .cloned()
-        .ok_or_else(|| HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})))?;
-    Ok(ServerResources { config, rcon, lgsm_lock })
-}
-
 async fn lgsm_action(
     server_id: web::Path<String>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
     action: &str,
 ) -> HttpResponse {
-    let res = match resolve_server(&server_id, &server_configs, &rcon_clients, &lgsm_locks) {
-        Ok(r) => r,
-        Err(e) => return e,
+    let config = match registry.get_config(&server_id).await {
+        Some(c) => c,
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server not found"}))
+        }
     };
-    let _guard = res.lgsm_lock.lock.lock().await;
-    match run_lgsm_command(&res.config.paths.lgsm_script, action).await {
+    let lgsm_lock = match registry.get_lgsm_lock(&server_id).await {
+        Some(l) => l,
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server runtime not found"}))
+        }
+    };
+
+    let _guard = lgsm_lock.lock.lock().await;
+    match run_lgsm_command(&config.paths.lgsm_script, action).await {
         Ok(output) => HttpResponse::Ok().json(CommandResult {
             success: true,
             output,
@@ -139,57 +118,50 @@ async fn lgsm_action(
 
 pub async fn server_start(
     server_id: web::Path<String>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    lgsm_action(server_id, server_configs, rcon_clients, lgsm_locks, "start").await
+    lgsm_action(server_id, registry, "start").await
 }
 
 pub async fn server_stop(
     server_id: web::Path<String>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    lgsm_action(server_id, server_configs, rcon_clients, lgsm_locks, "stop").await
+    lgsm_action(server_id, registry, "stop").await
 }
 
 pub async fn server_restart(
     server_id: web::Path<String>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    lgsm_action(server_id, server_configs, rcon_clients, lgsm_locks, "restart").await
+    lgsm_action(server_id, registry, "restart").await
 }
 
 pub async fn server_update(
     server_id: web::Path<String>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    lgsm_action(server_id, server_configs, rcon_clients, lgsm_locks, "update").await
+    lgsm_action(server_id, registry, "update").await
 }
 
 pub async fn server_backup(
     server_id: web::Path<String>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    lgsm_action(server_id, server_configs, rcon_clients, lgsm_locks, "backup").await
+    lgsm_action(server_id, registry, "backup").await
 }
 
 /// POST /api/servers/{server_id}/save - RCON server.save
 pub async fn server_save(
     server_id: web::Path<String>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let rcon = match rcon_clients.get(server_id.as_str()) {
+    let rcon = match registry.get_rcon(&server_id).await {
         Some(r) => r,
-        None => return HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})),
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server not found"}))
+        }
     };
     match rcon.save().await {
         Ok(output) => HttpResponse::Ok().json(CommandResult {
@@ -209,19 +181,28 @@ pub async fn server_save(
 pub async fn server_wipe(
     server_id: web::Path<String>,
     body: web::Json<WipeRequest>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
-    lgsm_locks: web::Data<HashMap<String, Arc<LgsmLock>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let res = match resolve_server(&server_id, &server_configs, &rcon_clients, &lgsm_locks) {
-        Ok(r) => r,
-        Err(e) => return e,
+    let config = match registry.get_config(&server_id).await {
+        Some(c) => c,
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server not found"}))
+        }
     };
-    let _guard = res.lgsm_lock.lock.lock().await;
+    let lgsm_lock = match registry.get_lgsm_lock(&server_id).await {
+        Some(l) => l,
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server runtime not found"}))
+        }
+    };
 
-    let server_dir = format!("{}/server/rustserver", res.config.paths.server_files);
+    let _guard = lgsm_lock.lock.lock().await;
 
-    if let Err(e) = run_lgsm_command(&res.config.paths.lgsm_script, "stop").await {
+    let server_dir = format!("{}/server/rustserver", config.paths.server_files);
+
+    if let Err(e) = run_lgsm_command(&config.paths.lgsm_script, "stop").await {
         tracing::warn!("Failed to stop server before wipe: {}", e);
     }
 
@@ -251,20 +232,28 @@ pub async fn server_wipe(
     }
 
     if let Some(ref seed) = body.seed {
-        if let Err(e) = update_server_seed(&res.config.paths.server_cfg, seed) {
+        if let Err(e) = update_server_seed(&config.paths.server_cfg, seed) {
             errors.push(format!("Failed to update seed: {}", e));
         }
     }
 
-    let start_output = run_lgsm_command(&res.config.paths.lgsm_script, "start")
+    let start_output = run_lgsm_command(&config.paths.lgsm_script, "start")
         .await
         .unwrap_or_else(|e| format!("Failed to start server: {}", e));
 
     let output = format!(
         "Wipe type: {}\nDeleted files: {}\nErrors: {}\nServer start: {}",
         body.wipe_type,
-        if deleted_files.is_empty() { "none".to_string() } else { deleted_files.join(", ") },
-        if errors.is_empty() { "none".to_string() } else { errors.join(", ") },
+        if deleted_files.is_empty() {
+            "none".to_string()
+        } else {
+            deleted_files.join(", ")
+        },
+        if errors.is_empty() {
+            "none".to_string()
+        } else {
+            errors.join(", ")
+        },
         start_output
     );
 
@@ -298,21 +287,23 @@ fn update_server_seed(cfg_path: &str, seed: &str) -> anyhow::Result<()> {
 /// GET /api/servers/{server_id}/status
 pub async fn server_status(
     server_id: web::Path<String>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
     sys_monitor: web::Data<Arc<SystemMonitor>>,
-    game_monitors: web::Data<HashMap<String, Arc<GameMonitor>>>,
 ) -> HttpResponse {
-    let rcon = match rcon_clients.get(server_id.as_str()) {
+    let rcon = match registry.get_rcon(&server_id).await {
         Some(r) => r,
-        None => return HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})),
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server not found"}))
+        }
     };
 
     let sys_history = sys_monitor.history.read().await;
     let sys = sys_history.latest().cloned();
     drop(sys_history);
 
-    let game_monitor = game_monitors.get(server_id.as_str());
-    let game = if let Some(gm) = game_monitor {
+    let game_monitor = registry.get_game_monitor(&server_id).await;
+    let game = if let Some(ref gm) = game_monitor {
         let game_history = gm.history.read().await;
         game_history.latest().cloned()
     } else {
@@ -321,10 +312,28 @@ pub async fn server_status(
 
     let (online, players, max_players, fps, hostname, map, entities, uptime) =
         if let Some(ref g) = game {
-            (g.online, g.players, g.max_players, g.fps, g.hostname.clone(), g.map.clone(), g.entities, g.uptime)
+            (
+                g.online,
+                g.players,
+                g.max_players,
+                g.fps,
+                g.hostname.clone(),
+                g.map.clone(),
+                g.entities,
+                g.uptime,
+            )
         } else {
             match rcon.server_info().await {
-                Ok(info) => (true, info.players, info.max_players, info.framerate, info.hostname, info.map, info.entity_count, info.uptime),
+                Ok(info) => (
+                    true,
+                    info.players,
+                    info.max_players,
+                    info.framerate,
+                    info.hostname,
+                    info.map,
+                    info.entity_count,
+                    info.uptime,
+                ),
                 Err(_) => (false, 0, 0, 0.0, String::new(), String::new(), 0, 0),
             }
         };

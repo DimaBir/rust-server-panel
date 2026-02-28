@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const terminalRef = ref<HTMLElement | null>(null)
 const commandInput = ref('')
 const commandHistory = ref<string[]>([])
@@ -16,8 +18,6 @@ let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
 
 const quickCommands = [
   { label: 'status', cmd: 'status' },
@@ -57,8 +57,7 @@ function initTerminal() {
 }
 
 function connectWebSocket() {
-  if (!activeServerId.value) return
-  // Close existing
+  if (!serverId.value) return
   if (ws) {
     ws.onclose = null
     ws.close()
@@ -67,7 +66,7 @@ function connectWebSocket() {
 
   const token = localStorage.getItem('jwt_token')
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${wsProtocol}//${window.location.host}/ws/${activeServerId.value}/console${token ? '?token=' + token : ''}`
+  const url = `${wsProtocol}//${window.location.host}/ws/${serverId.value}/console${token ? '?token=' + token : ''}`
 
   ws = new WebSocket(url)
 
@@ -130,12 +129,6 @@ function handleKeyDown(e: KeyboardEvent) {
 function clearTerminal() {
   terminal?.clear()
 }
-
-watch(() => serverStore.activeServerId, () => {
-  terminal?.clear()
-  terminal?.writeln('\x1b[90mSwitching server...\x1b[0m')
-  connectWebSocket()
-})
 
 onMounted(async () => {
   await nextTick()

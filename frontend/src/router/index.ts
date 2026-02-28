@@ -11,7 +11,19 @@ const router = createRouter({
     },
     {
       path: '/',
-      component: () => import('../layouts/MainLayout.vue'),
+      component: () => import('../layouts/HomeLayout.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'Home',
+          component: () => import('../views/HomePage.vue'),
+        },
+      ],
+    },
+    {
+      path: '/servers/:serverId',
+      component: () => import('../layouts/ServerLayout.vue'),
       meta: { requiresAuth: true },
       children: [
         {
@@ -53,6 +65,11 @@ const router = createRouter({
           path: 'schedule',
           name: 'Schedule',
           component: () => import('../views/SchedulePage.vue'),
+        },
+        {
+          path: 'map',
+          name: 'Map',
+          component: () => import('../views/MapPage.vue'),
         },
       ],
     },

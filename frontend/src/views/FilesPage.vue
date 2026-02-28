@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { serverApi } from '../services/api'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 import type { FileEntry } from '../types'
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const loading = ref(true)
 const saving = ref(false)
 const files = ref<FileEntry[]>([])
@@ -21,8 +23,6 @@ const newFolderName = ref('')
 const deleteTarget = ref<FileEntry | null>(null)
 
 const uploadInput = ref<HTMLInputElement | null>(null)
-
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
 
 interface BreadcrumbItem { title: string; path: string }
 
@@ -44,11 +44,11 @@ const sortedFiles = computed(() => {
 })
 
 async function fetchFiles(path?: string) {
-  if (!activeServerId.value) return
+  if (!serverId.value) return
   loading.value = true
   try {
     const p = path ?? currentPath.value
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     const res = await api.get<FileEntry[]>('/files/list', { params: { path: p } })
     files.value = res.data ?? []
     currentPath.value = p
@@ -72,7 +72,7 @@ async function openItem(item: FileEntry) {
 
 async function openFile(item: FileEntry) {
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     const res = await api.get<{ content: string }>('/files/read', { params: { path: item.path } })
     selectedFile.value = item
     fileContent.value = res.data.content
@@ -84,7 +84,7 @@ async function saveFile() {
   if (!selectedFile.value) return
   saving.value = true
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.put('/files/write', { path: selectedFile.value.path, content: fileContent.value })
     fileModified.value = false
   } catch { /* interceptor */ }
@@ -102,7 +102,7 @@ async function createFile() {
   if (!newFileName.value.trim()) return
   const path = currentPath.value ? `${currentPath.value}/${newFileName.value.trim()}` : newFileName.value.trim()
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.put('/files/write', { path, content: '' })
     newFileDialog.value = false
     newFileName.value = ''
@@ -114,7 +114,7 @@ async function createFolder() {
   if (!newFolderName.value.trim()) return
   const path = currentPath.value ? `${currentPath.value}/${newFolderName.value.trim()}` : newFolderName.value.trim()
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.post('/files/mkdir', { path })
     newFolderDialog.value = false
     newFolderName.value = ''
@@ -130,7 +130,7 @@ function confirmDelete(item: FileEntry) {
 async function executeDelete() {
   if (!deleteTarget.value) return
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.delete('/files/delete', { params: { path: deleteTarget.value.path } })
     if (selectedFile.value?.path === deleteTarget.value.path) {
       selectedFile.value = null
@@ -155,7 +155,7 @@ async function handleUpload(event: Event) {
   formData.append('path', currentPath.value)
 
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     await fetchFiles()
   } catch { /* interceptor */ }
@@ -164,7 +164,7 @@ async function handleUpload(event: Event) {
 
 function downloadFile(item: FileEntry) {
   const token = localStorage.getItem('jwt_token')
-  const url = `/api/servers/${activeServerId.value}/files/download?path=${encodeURIComponent(item.path)}&token=${token}`
+  const url = `/api/servers/${serverId.value}/files/download?path=${encodeURIComponent(item.path)}&token=${token}`
   window.open(url, '_blank')
 }
 
@@ -201,14 +201,6 @@ function fileIconColor(item: FileEntry): string {
     default: return 'medium-emphasis'
   }
 }
-
-watch(() => serverStore.activeServerId, () => {
-  selectedFile.value = null
-  fileContent.value = ''
-  fileModified.value = false
-  currentPath.value = ''
-  fetchFiles('')
-})
 
 onMounted(() => { fetchFiles('') })
 </script>

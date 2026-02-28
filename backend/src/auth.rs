@@ -181,10 +181,11 @@ where
         Box::pin(async move {
             let path = req.path().to_string();
 
-            // Skip auth for login endpoint, WebSocket upgrades, and static files
+            // Skip auth for login endpoint, WebSocket upgrades, position updates (uses RCON token), and static files
             let is_public = path == "/api/auth/login"
                 || path.starts_with("/ws/")
-                || !path.starts_with("/api/");
+                || !path.starts_with("/api/")
+                || (req.method() == actix_web::http::Method::POST && path.ends_with("/positions"));
 
             if is_public {
                 return service.call(req).await;

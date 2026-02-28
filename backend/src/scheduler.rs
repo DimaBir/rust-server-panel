@@ -1,16 +1,15 @@
 use actix_web::{web, HttpResponse};
-use chrono::{DateTime, NaiveTime, Utc, Weekday, Datelike};
+use chrono::{DateTime, Datelike, NaiveTime, Utc, Weekday};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
-use crate::config::GameServerConfig;
 use crate::lgsm::LgsmLock;
 use crate::rcon::RconClient;
+use crate::registry::ServerRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -36,7 +35,6 @@ pub struct ScheduledJob {
     pub last_run: Option<DateTime<Utc>>,
     pub next_run: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    /// Which server this job applies to
     pub server_id: String,
 }
 
@@ -161,9 +159,7 @@ fn parse_weekday(s: &str) -> Option<Weekday> {
 
 pub fn spawn_scheduler(
     scheduler: Arc<Scheduler>,
-    rcon_clients: HashMap<String, Arc<RconClient>>,
-    server_configs: Vec<GameServerConfig>,
-    lgsm_locks: HashMap<String, Arc<LgsmLock>>,
+    registry: Arc<ServerRegistry>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = interval(Duration::from_secs(30));
@@ -185,16 +181,26 @@ pub fn spawn_scheduler(
 
                 if let Some(next) = job.next_run {
                     if now >= next {
-                        tracing::info!("Executing scheduled job: {} ({})", job.name, job.id);
+                        tracing::info!(
+                            "Executing scheduled job: {} ({})",
+                            job.name,
+                            job.id
+                        );
 
-                        let rcon = rcon_clients.get(&job.server_id);
-                        let config = server_configs.iter().find(|s| s.id == job.server_id);
-                        let lgsm_lock = lgsm_locks.get(&job.server_id);
+                        let rcon = registry.get_rcon(&job.server_id).await;
+                        let config = registry.get_config(&job.server_id).await;
+                        let lgsm_lock = registry.get_lgsm_lock(&job.server_id).await;
 
-                        if let (Some(rcon), Some(config), Some(lgsm_lock)) = (rcon, config, lgsm_lock) {
-                            execute_job(job, rcon, config, lgsm_lock).await;
+                        if let (Some(rcon), Some(config), Some(lgsm_lock)) =
+                            (rcon, config, lgsm_lock)
+                        {
+                            execute_job(job, &rcon, &config, &lgsm_lock).await;
                         } else {
-                            tracing::warn!("Job '{}' server '{}' not found, skipping", job.name, job.server_id);
+                            tracing::warn!(
+                                "Job '{}' server '{}' not found, skipping",
+                                job.name,
+                                job.server_id
+                            );
                         }
 
                         job.last_run = Some(now);
@@ -215,7 +221,7 @@ pub fn spawn_scheduler(
 async fn execute_job(
     job: &ScheduledJob,
     rcon: &RconClient,
-    config: &GameServerConfig,
+    config: &crate::config::GameServerConfig,
     lgsm_lock: &LgsmLock,
 ) {
     let result = match job.job_type {
@@ -291,9 +297,7 @@ fn delete_wipe_files(server_files: &str, full: bool) {
 // --- API Endpoints ---
 
 /// GET /api/schedule
-pub async fn list_jobs(
-    scheduler: web::Data<Arc<Scheduler>>,
-) -> HttpResponse {
+pub async fn list_jobs(scheduler: web::Data<Arc<Scheduler>>) -> HttpResponse {
     let jobs = scheduler.jobs.read().await;
     HttpResponse::Ok().json(&*jobs)
 }
@@ -302,11 +306,16 @@ pub async fn list_jobs(
 pub async fn create_job(
     body: web::Json<CreateJobRequest>,
     scheduler: web::Data<Arc<Scheduler>>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let server_id = body.server_id.clone().unwrap_or_else(|| {
-        server_configs.first().map(|s| s.id.clone()).unwrap_or_else(|| "main".to_string())
-    });
+    let server_id = if let Some(ref id) = body.server_id {
+        id.clone()
+    } else {
+        let defs = registry.definitions.read().await;
+        defs.first()
+            .map(|d| d.id.clone())
+            .unwrap_or_else(|| "main".to_string())
+    };
 
     let next_run = compute_next_run(&body.schedule);
     let job = ScheduledJob {
@@ -343,17 +352,29 @@ pub async fn update_job(
     let mut jobs = scheduler.jobs.write().await;
     let job = match jobs.iter_mut().find(|j| j.id == *id) {
         Some(j) => j,
-        None => return HttpResponse::NotFound().json(ErrorBody { error: "Job not found".to_string() }),
+        None => {
+            return HttpResponse::NotFound().json(ErrorBody {
+                error: "Job not found".to_string(),
+            })
+        }
     };
 
-    if let Some(ref name) = body.name { job.name = name.clone(); }
-    if let Some(ref job_type) = body.job_type { job.job_type = job_type.clone(); }
+    if let Some(ref name) = body.name {
+        job.name = name.clone();
+    }
+    if let Some(ref job_type) = body.job_type {
+        job.job_type = job_type.clone();
+    }
     if let Some(ref schedule) = body.schedule {
         job.schedule = schedule.clone();
         job.next_run = compute_next_run(schedule);
     }
-    if let Some(ref payload) = body.payload { job.payload = Some(payload.clone()); }
-    if let Some(enabled) = body.enabled { job.enabled = enabled; }
+    if let Some(ref payload) = body.payload {
+        job.payload = Some(payload.clone());
+    }
+    if let Some(enabled) = body.enabled {
+        job.enabled = enabled;
+    }
 
     let job = job.clone();
     drop(jobs);
@@ -375,7 +396,9 @@ pub async fn delete_job(
     jobs.retain(|j| j.id != *id);
 
     if jobs.len() == original_len {
-        return HttpResponse::NotFound().json(ErrorBody { error: "Job not found".to_string() });
+        return HttpResponse::NotFound().json(ErrorBody {
+            error: "Job not found".to_string(),
+        });
     }
 
     drop(jobs);
@@ -398,7 +421,11 @@ pub async fn toggle_job(
     let mut jobs = scheduler.jobs.write().await;
     let job = match jobs.iter_mut().find(|j| j.id == *id) {
         Some(j) => j,
-        None => return HttpResponse::NotFound().json(ErrorBody { error: "Job not found".to_string() }),
+        None => {
+            return HttpResponse::NotFound().json(ErrorBody {
+                error: "Job not found".to_string(),
+            })
+        }
     };
 
     job.enabled = !job.enabled;

@@ -1,9 +1,8 @@
 use actix_web::{web, HttpResponse};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::rcon::RconClient;
+use crate::registry::ServerRegistry;
 
 #[derive(Debug, Serialize)]
 struct ErrorBody {
@@ -39,11 +38,15 @@ pub struct UnbanRequest {
 /// GET /api/servers/{server_id}/players
 pub async fn list_players(
     server_id: web::Path<String>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let rcon = match rcon_clients.get(server_id.as_str()) {
+    let rcon = match registry.get_rcon(&server_id).await {
         Some(r) => r,
-        None => return HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }),
+        None => {
+            return HttpResponse::NotFound().json(ErrorBody {
+                error: "Server not found".to_string(),
+            })
+        }
     };
 
     match rcon.player_list().await {
@@ -58,11 +61,15 @@ pub async fn list_players(
 pub async fn kick_player(
     server_id: web::Path<String>,
     body: web::Json<KickRequest>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let rcon = match rcon_clients.get(server_id.as_str()) {
+    let rcon = match registry.get_rcon(&server_id).await {
         Some(r) => r,
-        None => return HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }),
+        None => {
+            return HttpResponse::NotFound().json(ErrorBody {
+                error: "Server not found".to_string(),
+            })
+        }
     };
 
     let reason = body.reason.as_deref().unwrap_or("Kicked by admin");
@@ -81,11 +88,15 @@ pub async fn kick_player(
 pub async fn ban_player(
     server_id: web::Path<String>,
     body: web::Json<BanRequest>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let rcon = match rcon_clients.get(server_id.as_str()) {
+    let rcon = match registry.get_rcon(&server_id).await {
         Some(r) => r,
-        None => return HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }),
+        None => {
+            return HttpResponse::NotFound().json(ErrorBody {
+                error: "Server not found".to_string(),
+            })
+        }
     };
 
     let reason = body.reason.as_deref().unwrap_or("Banned by admin");
@@ -104,11 +115,15 @@ pub async fn ban_player(
 pub async fn unban_player(
     server_id: web::Path<String>,
     body: web::Json<UnbanRequest>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let rcon = match rcon_clients.get(server_id.as_str()) {
+    let rcon = match registry.get_rcon(&server_id).await {
         Some(r) => r,
-        None => return HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }),
+        None => {
+            return HttpResponse::NotFound().json(ErrorBody {
+                error: "Server not found".to_string(),
+            })
+        }
     };
 
     match rcon.unban(&body.steam_id).await {

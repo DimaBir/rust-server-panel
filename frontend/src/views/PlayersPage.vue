@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { serverApi } from '../services/api'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 import type { Player } from '../types'
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const players = ref<Player[]>([])
 const loading = ref(true)
 const search = ref('')
@@ -15,8 +17,6 @@ const selectedPlayer = ref<Player | null>(null)
 const actionReason = ref('')
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
-
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
 
 const onlineHeaders = [
   { title: 'Name', key: 'displayName' },
@@ -36,9 +36,9 @@ const filteredPlayers = computed(() => {
 })
 
 async function fetchPlayers() {
-  if (!activeServerId.value) return
+  if (!serverId.value) return
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     const res = await api.get<{ players: Player[] }>('/players')
     players.value = res.data.players ?? []
   } catch {
@@ -63,7 +63,7 @@ function openBan(player: Player) {
 async function confirmKick() {
   if (!selectedPlayer.value) return
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.post('/players/kick', {
       steamId: selectedPlayer.value.steamId,
       reason: actionReason.value || 'Kicked by admin',
@@ -76,7 +76,7 @@ async function confirmKick() {
 async function confirmBan() {
   if (!selectedPlayer.value) return
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.post('/players/ban', {
       steamId: selectedPlayer.value.steamId,
       reason: actionReason.value || 'Banned by admin',
@@ -92,11 +92,6 @@ function formatTime(seconds: number): string {
   if (h > 0) return `${h}h ${m}m`
   return `${m}m`
 }
-
-watch(() => serverStore.activeServerId, () => {
-  loading.value = true
-  fetchPlayers()
-})
 
 onMounted(() => {
   fetchPlayers()

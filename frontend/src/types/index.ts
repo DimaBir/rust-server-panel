@@ -2,6 +2,34 @@ export interface GameServer {
   id: string
   name: string
   online: boolean
+  serverType: 'vanilla' | 'modded'
+  gamePort: number
+  rconPort: number
+  queryPort: number
+  maxPlayers: number
+  worldSize: number
+  seed: number
+  provisioningStatus: 'ready' | 'installing' | 'downloading' | 'installing_oxide' | 'configuring' | 'error'
+  source: 'static' | 'dynamic'
+  players?: number
+  createdAt: string
+}
+
+export interface CreateServerRequest {
+  name: string
+  serverType: 'vanilla' | 'modded'
+  maxPlayers?: number
+  worldSize?: number
+  seed?: number
+  hostname?: string
+}
+
+export interface PlayerPosition {
+  steamId: string
+  displayName: string
+  x: number
+  y: number
+  z: number
 }
 
 export interface ServerInfo {

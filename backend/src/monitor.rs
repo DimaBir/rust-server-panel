@@ -9,6 +9,7 @@ use tokio::time::{interval, Duration};
 
 use crate::config::MonitorConfig;
 use crate::rcon::RconClient;
+use crate::registry::ServerRegistry;
 
 /// A single system metrics snapshot.
 #[derive(Debug, Clone, Serialize)]
@@ -122,9 +123,16 @@ pub fn spawn_system_collector(
             };
 
             let disks = sysinfo::Disks::new_with_refreshed_list();
-            let (disk_total, disk_used) = disks.list().iter().fold((0u64, 0u64), |(t, u), d| {
-                (t + d.total_space(), u + (d.total_space() - d.available_space()))
-            });
+            let (disk_total, disk_used) =
+                disks
+                    .list()
+                    .iter()
+                    .fold((0u64, 0u64), |(t, u), d| {
+                        (
+                            t + d.total_space(),
+                            u + (d.total_space() - d.available_space()),
+                        )
+                    });
             let disk_percent = if disk_total > 0 {
                 (disk_used as f32 / disk_total as f32) * 100.0
             } else {
@@ -214,9 +222,7 @@ struct GameMonitorResponse {
 }
 
 /// GET /api/monitor/system
-pub async fn get_system_metrics(
-    monitor: web::Data<Arc<SystemMonitor>>,
-) -> HttpResponse {
+pub async fn get_system_metrics(monitor: web::Data<Arc<SystemMonitor>>) -> HttpResponse {
     let history = monitor.history.read().await;
     let current = history.latest().cloned();
     let all = history.to_vec();
@@ -230,11 +236,14 @@ pub async fn get_system_metrics(
 /// GET /api/servers/{server_id}/monitor/game
 pub async fn get_game_metrics(
     server_id: web::Path<String>,
-    game_monitors: web::Data<std::collections::HashMap<String, Arc<GameMonitor>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let monitor = match game_monitors.get(server_id.as_str()) {
+    let monitor = match registry.get_game_monitor(&server_id).await {
         Some(m) => m,
-        None => return HttpResponse::NotFound().json(serde_json::json!({"error": "Server not found"})),
+        None => {
+            return HttpResponse::NotFound()
+                .json(serde_json::json!({"error": "Server not found"}))
+        }
     };
 
     let history = monitor.history.read().await;

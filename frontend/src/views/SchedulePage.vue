@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import api from '../services/api'
+import { useRoute } from 'vue-router'
 import { useServerStore } from '../stores/server'
 import type { ScheduledJob } from '../types'
 
+const route = useRoute()
 const serverStore = useServerStore()
+const serverId = computed(() => route.params.serverId as string)
+
 const loading = ref(true)
 const jobs = ref<ScheduledJob[]>([])
 
@@ -14,8 +18,6 @@ const editingJob = ref<Partial<ScheduledJob>>({})
 const isNewJob = ref(false)
 const saving = ref(false)
 const deleteTarget = ref<ScheduledJob | null>(null)
-
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
 
 const headers = [
   { title: 'Name', key: 'name' },
@@ -46,10 +48,9 @@ const schedulePresets = [
   { label: 'Every 30 min', value: '*/30 * * * *' },
 ]
 
-// Filter to show jobs for active server
 const filteredJobs = computed(() => {
-  if (!activeServerId.value) return jobs.value
-  return jobs.value.filter((j) => j.serverId === activeServerId.value)
+  if (!serverId.value) return jobs.value
+  return jobs.value.filter((j) => j.serverId === serverId.value)
 })
 
 async function fetchJobs() {
@@ -71,7 +72,7 @@ function openNewJob() {
     jobType: 'rcon_command',
     payload: '',
     enabled: true,
-    serverId: activeServerId.value,
+    serverId: serverId.value,
   }
   isNewJob.value = true
   editDialog.value = true
@@ -130,8 +131,6 @@ function jobTypeLabel(value: string): string {
 function serverName(id: string): string {
   return serverStore.servers.find((s) => s.id === id)?.name ?? id
 }
-
-watch(() => serverStore.activeServerId, () => { fetchJobs() })
 
 onMounted(() => { fetchJobs() })
 </script>

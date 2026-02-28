@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { serverApi } from '../services/api'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const loading = ref(true)
 const saving = ref(false)
 const serverCfg = ref('')
 const cfgModified = ref(false)
 
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
-
 async function fetchServerCfg() {
-  if (!activeServerId.value) return
+  if (!serverId.value) return
   loading.value = true
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     const res = await api.get<{ content: string }>('/files/read', {
       params: { path: 'serverfiles/server/rustserver/cfg/server.cfg' },
     })
@@ -31,7 +31,7 @@ async function fetchServerCfg() {
 async function saveServerCfg() {
   saving.value = true
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.put('/files/write', {
       path: 'serverfiles/server/rustserver/cfg/server.cfg',
       content: serverCfg.value,
@@ -40,8 +40,6 @@ async function saveServerCfg() {
   } catch { /* interceptor */ }
   finally { saving.value = false }
 }
-
-watch(() => serverStore.activeServerId, () => { fetchServerCfg() })
 
 onMounted(() => { fetchServerCfg() })
 </script>

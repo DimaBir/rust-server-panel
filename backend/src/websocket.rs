@@ -2,14 +2,13 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::Message;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 
 use crate::auth::validate_token;
 use crate::config::AppConfig;
-use crate::monitor::{GameMonitor, GameSnapshot, SystemMonitor, SystemSnapshot};
-use crate::rcon::RconClient;
+use crate::monitor::{GameSnapshot, SystemMonitor, SystemSnapshot};
+use crate::registry::ServerRegistry;
 
 #[derive(Debug, Deserialize)]
 pub struct WsTokenQuery {
@@ -31,7 +30,7 @@ pub async fn ws_console(
     path: web::Path<String>,
     query: web::Query<WsTokenQuery>,
     config: web::Data<AppConfig>,
-    rcon_clients: web::Data<HashMap<String, Arc<RconClient>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let server_id = path.into_inner();
 
@@ -40,8 +39,8 @@ pub async fn ws_console(
         return Ok(HttpResponse::Unauthorized().body("Invalid or expired token"));
     }
 
-    let rcon = match rcon_clients.get(&server_id) {
-        Some(r) => r.clone(),
+    let rcon = match registry.get_rcon(&server_id).await {
+        Some(r) => r,
         None => return Ok(HttpResponse::NotFound().body("Server not found")),
     };
 
@@ -95,7 +94,7 @@ pub async fn ws_monitor(
     query: web::Query<WsTokenQuery>,
     config: web::Data<AppConfig>,
     sys_monitor: web::Data<Arc<SystemMonitor>>,
-    game_monitors: web::Data<HashMap<String, Arc<GameMonitor>>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let server_id = path.into_inner();
 
@@ -104,8 +103,8 @@ pub async fn ws_monitor(
         return Ok(HttpResponse::Unauthorized().body("Invalid or expired token"));
     }
 
-    let game_monitor = match game_monitors.get(&server_id) {
-        Some(m) => m.clone(),
+    let game_monitor = match registry.get_game_monitor(&server_id).await {
+        Some(m) => m,
         None => return Ok(HttpResponse::NotFound().body("Server not found")),
     };
 

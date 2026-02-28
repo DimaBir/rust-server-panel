@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     #[serde(default = "default_monitor_config")]
     pub monitor: MonitorConfig,
+    #[serde(default)]
+    pub provisioning: ProvisioningConfig,
     /// Multi-server list. If absent, falls back to legacy top-level rcon/paths.
     #[serde(default)]
     pub servers: Vec<GameServerConfig>,
@@ -28,7 +30,7 @@ pub struct PanelConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GameServerConfig {
     #[serde(default = "default_server_id")]
     pub id: String,
@@ -40,7 +42,7 @@ pub struct GameServerConfig {
     pub paths: PathsConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RconConfig {
     #[serde(default = "default_rcon_host")]
     pub host: String,
@@ -60,7 +62,7 @@ pub struct AuthConfig {
     pub jwt_secret: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PathsConfig {
     #[serde(default = "default_lgsm_script")]
     pub lgsm_script: String,
@@ -84,6 +86,29 @@ pub struct MonitorConfig {
     pub poll_interval_secs: u64,
     #[serde(default = "default_history_size")]
     pub history_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProvisioningConfig {
+    #[serde(default = "default_provisioning_base_path")]
+    pub base_path: String,
+    #[serde(default = "default_port_range_start")]
+    pub port_range_start: u16,
+    #[serde(default = "default_port_offset")]
+    pub port_offset: u16,
+    #[serde(default = "default_max_servers")]
+    pub max_servers: usize,
+}
+
+impl Default for ProvisioningConfig {
+    fn default() -> Self {
+        Self {
+            base_path: default_provisioning_base_path(),
+            port_range_start: default_port_range_start(),
+            port_offset: default_port_offset(),
+            max_servers: default_max_servers(),
+        }
+    }
 }
 
 // Default value functions
@@ -187,6 +212,19 @@ fn default_server_name() -> String {
     "Main Server".to_string()
 }
 
+fn default_provisioning_base_path() -> String {
+    "/home".to_string()
+}
+fn default_port_range_start() -> u16 {
+    28015
+}
+fn default_port_offset() -> u16 {
+    10
+}
+fn default_max_servers() -> usize {
+    10
+}
+
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
         let config_path = Path::new("config.yaml");
@@ -203,6 +241,7 @@ impl AppConfig {
                 servers: Vec::new(),
                 rcon: None,
                 paths: None,
+                provisioning: ProvisioningConfig::default(),
             }
         };
 

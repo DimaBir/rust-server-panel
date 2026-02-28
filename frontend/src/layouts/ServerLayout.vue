@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useServerStore } from '../stores/server'
 import { serverApi } from '../services/api'
 import type { ServerInfo } from '../types'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const serverStore = useServerStore()
 const drawer = ref(true)
@@ -14,25 +15,34 @@ const serverInfo = ref<ServerInfo | null>(null)
 const confirmDialog = ref(false)
 const confirmAction = ref<{ title: string; text: string; action: () => void } | null>(null)
 
-const navItems = [
-  { title: 'Dashboard', icon: 'mdi-view-dashboard', to: '/' },
-  { title: 'Console', icon: 'mdi-console', to: '/console' },
-  { title: 'Players', icon: 'mdi-account-group', to: '/players' },
-  { title: 'Files', icon: 'mdi-folder', to: '/files' },
-  { title: 'Plugins', icon: 'mdi-puzzle', to: '/plugins' },
-  { title: 'Config', icon: 'mdi-cog', to: '/config' },
-  { title: 'Logs', icon: 'mdi-text-box-multiple', to: '/logs' },
-  { title: 'Schedule', icon: 'mdi-clock-outline', to: '/schedule' },
-]
+const serverId = computed(() => route.params.serverId as string)
 
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
+const navItems = computed(() => {
+  const base = `/servers/${serverId.value}`
+  return [
+    { title: 'Dashboard', icon: 'mdi-view-dashboard', to: base },
+    { title: 'Console', icon: 'mdi-console', to: `${base}/console` },
+    { title: 'Players', icon: 'mdi-account-group', to: `${base}/players` },
+    { title: 'Files', icon: 'mdi-folder', to: `${base}/files` },
+    { title: 'Plugins', icon: 'mdi-puzzle', to: `${base}/plugins` },
+    { title: 'Config', icon: 'mdi-cog', to: `${base}/config` },
+    { title: 'Logs', icon: 'mdi-text-box-multiple', to: `${base}/logs` },
+    { title: 'Schedule', icon: 'mdi-clock-outline', to: `${base}/schedule` },
+    { title: 'Map', icon: 'mdi-map', to: `${base}/map` },
+  ]
+})
+
+const serverName = computed(() => {
+  const s = serverStore.getServer(serverId.value)
+  return s?.name ?? serverId.value
+})
 
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
 async function fetchStatus() {
-  if (!activeServerId.value) return
+  if (!serverId.value) return
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     const res = await api.get<ServerInfo>('/status')
     serverInfo.value = res.data
   } catch {
@@ -55,7 +65,7 @@ async function executeConfirm() {
 async function quickRestart() {
   showConfirm('Restart Server', 'Are you sure you want to restart the server?', async () => {
     try {
-      const api = serverApi(activeServerId.value)
+      const api = serverApi(serverId.value)
       await api.post('/restart')
     } catch { /* handled by interceptor */ }
   })
@@ -63,14 +73,9 @@ async function quickRestart() {
 
 async function quickSave() {
   try {
-    const api = serverApi(activeServerId.value)
+    const api = serverApi(serverId.value)
     await api.post('/save')
   } catch { /* handled by interceptor */ }
-}
-
-function selectServer(id: string) {
-  serverStore.setActiveServer(id)
-  fetchStatus()
 }
 
 function logout() {
@@ -98,26 +103,29 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Server Selector -->
+    <!-- Back to Servers -->
     <div class="px-3 pb-2">
-      <div class="text-overline text-medium-emphasis px-1 mb-1" style="font-size: 10px;">SERVERS</div>
       <v-list density="compact" class="pa-0" nav>
         <v-list-item
-          v-for="s in serverStore.servers"
-          :key="s.id"
-          :active="s.id === activeServerId"
-          color="primary"
+          to="/"
           rounded="lg"
           density="compact"
           class="mb-1"
-          @click="selectServer(s.id)"
         >
           <template #prepend>
-            <v-icon :color="s.online ? '#10b981' : '#64748b'" size="10" class="mr-2">mdi-circle</v-icon>
+            <v-icon size="18" class="mr-2">mdi-arrow-left</v-icon>
           </template>
-          <v-list-item-title class="text-body-2">{{ s.name }}</v-list-item-title>
+          <v-list-item-title class="text-body-2">Back to Servers</v-list-item-title>
         </v-list-item>
       </v-list>
+    </div>
+
+    <v-divider class="mx-3 my-1" style="opacity: 0.06;" />
+
+    <!-- Server Name -->
+    <div class="px-4 py-2">
+      <div class="text-overline text-medium-emphasis" style="font-size: 10px;">SERVER</div>
+      <div class="text-body-2 font-weight-medium" style="color: #e2e8f0;">{{ serverName }}</div>
     </div>
 
     <v-divider class="mx-3 my-1" style="opacity: 0.06;" />
@@ -136,6 +144,7 @@ onUnmounted(() => {
           density="compact"
           class="mb-1"
           color="primary"
+          exact
         />
       </v-list>
     </div>

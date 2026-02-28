@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::config::GameServerConfig;
+use crate::registry::ServerRegistry;
 
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1 MB for text reads
 
@@ -62,12 +63,19 @@ struct SuccessBody {
     message: String,
 }
 
-fn get_base_dir(server_id: &str, server_configs: &[GameServerConfig]) -> Result<String, HttpResponse> {
-    server_configs
-        .iter()
-        .find(|s| s.id == server_id)
-        .map(|s| s.paths.base_dir.clone())
-        .ok_or_else(|| HttpResponse::NotFound().json(ErrorBody { error: "Server not found".to_string() }))
+async fn get_base_dir(
+    server_id: &str,
+    registry: &Arc<ServerRegistry>,
+) -> Result<String, HttpResponse> {
+    registry
+        .get_config(server_id)
+        .await
+        .map(|c| c.paths.base_dir)
+        .ok_or_else(|| {
+            HttpResponse::NotFound().json(ErrorBody {
+                error: "Server not found".to_string(),
+            })
+        })
 }
 
 fn safe_resolve(base_dir: &str, relative_path: &str) -> Result<PathBuf, String> {
@@ -80,14 +88,22 @@ fn safe_resolve(base_dir: &str, relative_path: &str) -> Result<PathBuf, String> 
     };
 
     let canonical = if requested.exists() {
-        requested.canonicalize().map_err(|e| format!("Failed to resolve path: {}", e))?
+        requested
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {}", e))?
     } else {
-        let parent = requested.parent().ok_or_else(|| "Invalid path: no parent".to_string())?;
+        let parent = requested
+            .parent()
+            .ok_or_else(|| "Invalid path: no parent".to_string())?;
         if !parent.exists() {
             return Err("Parent directory does not exist".to_string());
         }
-        let canonical_parent = parent.canonicalize().map_err(|e| format!("Failed to resolve parent: {}", e))?;
-        let file_name = requested.file_name().ok_or_else(|| "Invalid path: no filename".to_string())?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve parent: {}", e))?;
+        let file_name = requested
+            .file_name()
+            .ok_or_else(|| "Invalid path: no filename".to_string())?;
         canonical_parent.join(file_name)
     };
 
@@ -101,9 +117,8 @@ fn safe_resolve(base_dir: &str, relative_path: &str) -> Result<PathBuf, String> 
 
 fn is_text_file(path: &Path) -> bool {
     let text_extensions = [
-        "txt", "cfg", "json", "yaml", "yml", "toml", "xml", "ini", "conf", "log",
-        "cs", "lua", "py", "sh", "bash", "md", "html", "css", "js", "ts",
-        "csv", "env", "properties", "config",
+        "txt", "cfg", "json", "yaml", "yml", "toml", "xml", "ini", "conf", "log", "cs", "lua",
+        "py", "sh", "bash", "md", "html", "css", "js", "ts", "csv", "env", "properties", "config",
     ];
     path.extension()
         .and_then(|e| e.to_str())
@@ -115,9 +130,9 @@ fn is_text_file(path: &Path) -> bool {
 pub async fn list_files(
     server_id: web::Path<String>,
     query: web::Query<ListQuery>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -128,7 +143,9 @@ pub async fn list_files(
     };
 
     if !dir_path.is_dir() {
-        return HttpResponse::BadRequest().json(ErrorBody { error: "Path is not a directory".to_string() });
+        return HttpResponse::BadRequest().json(ErrorBody {
+            error: "Path is not a directory".to_string(),
+        });
     }
 
     let mut entries = Vec::new();
@@ -167,7 +184,9 @@ pub async fn list_files(
     }
 
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
     HttpResponse::Ok().json(entries)
@@ -177,9 +196,9 @@ pub async fn list_files(
 pub async fn read_file(
     server_id: web::Path<String>,
     query: web::Query<ReadQuery>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -189,13 +208,19 @@ pub async fn read_file(
     };
 
     if !file_path.is_file() {
-        return HttpResponse::NotFound().json(ErrorBody { error: "File not found".to_string() });
+        return HttpResponse::NotFound().json(ErrorBody {
+            error: "File not found".to_string(),
+        });
     }
 
     if let Ok(metadata) = std::fs::metadata(&file_path) {
         if metadata.len() > MAX_FILE_SIZE {
             return HttpResponse::BadRequest().json(ErrorBody {
-                error: format!("File too large ({} bytes, max {} bytes)", metadata.len(), MAX_FILE_SIZE),
+                error: format!(
+                    "File too large ({} bytes, max {} bytes)",
+                    metadata.len(),
+                    MAX_FILE_SIZE
+                ),
             });
         }
     }
@@ -216,9 +241,9 @@ pub async fn read_file(
 pub async fn write_file(
     server_id: web::Path<String>,
     body: web::Json<WriteBody>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -249,9 +274,9 @@ pub async fn write_file(
 pub async fn upload_file(
     server_id: web::Path<String>,
     mut payload: Multipart,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -262,7 +287,11 @@ pub async fn upload_file(
     while let Some(item) = payload.next().await {
         let mut field = match item {
             Ok(f) => f,
-            Err(e) => return HttpResponse::BadRequest().json(ErrorBody { error: format!("Multipart error: {}", e) }),
+            Err(e) => {
+                return HttpResponse::BadRequest().json(ErrorBody {
+                    error: format!("Multipart error: {}", e),
+                })
+            }
         };
 
         let field_name = field.name().map(|n| n.to_string()).unwrap_or_default();
@@ -270,7 +299,9 @@ pub async fn upload_file(
         if field_name == "path" {
             let mut data = Vec::new();
             while let Some(chunk) = field.next().await {
-                if let Ok(bytes) = chunk { data.extend_from_slice(&bytes); }
+                if let Ok(bytes) = chunk {
+                    data.extend_from_slice(&bytes);
+                }
             }
             target_dir = Some(String::from_utf8_lossy(&data).to_string());
             continue;
@@ -290,11 +321,15 @@ pub async fn upload_file(
 
             let mut file_data = Vec::new();
             while let Some(chunk) = field.next().await {
-                if let Ok(bytes) = chunk { file_data.extend_from_slice(&bytes); }
+                if let Ok(bytes) = chunk {
+                    file_data.extend_from_slice(&bytes);
+                }
             }
 
             match std::fs::write(&target_path, &file_data) {
-                Ok(()) => { uploaded_files.push(filename); }
+                Ok(()) => {
+                    uploaded_files.push(filename);
+                }
                 Err(e) => {
                     return HttpResponse::InternalServerError().json(ErrorBody {
                         error: format!("Failed to write uploaded file: {}", e),
@@ -314,9 +349,9 @@ pub async fn upload_file(
 pub async fn download_file(
     server_id: web::Path<String>,
     query: web::Query<DownloadQuery>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -326,17 +361,27 @@ pub async fn download_file(
     };
 
     if !file_path.is_file() {
-        return HttpResponse::NotFound().json(ErrorBody { error: "File not found".to_string() });
+        return HttpResponse::NotFound().json(ErrorBody {
+            error: "File not found".to_string(),
+        });
     }
 
-    let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("download");
+    let filename = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download");
 
     match std::fs::read(&file_path) {
         Ok(data) => {
-            let mime = mime_guess::from_path(&file_path).first_or_octet_stream().to_string();
+            let mime = mime_guess::from_path(&file_path)
+                .first_or_octet_stream()
+                .to_string();
             HttpResponse::Ok()
                 .insert_header(("Content-Type", mime))
-                .insert_header(("Content-Disposition", format!("attachment; filename=\"{}\"", filename)))
+                .insert_header((
+                    "Content-Disposition",
+                    format!("attachment; filename=\"{}\"", filename),
+                ))
                 .body(data)
         }
         Err(e) => HttpResponse::InternalServerError().json(ErrorBody {
@@ -349,9 +394,9 @@ pub async fn download_file(
 pub async fn mkdir(
     server_id: web::Path<String>,
     body: web::Json<MkdirBody>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -375,9 +420,9 @@ pub async fn mkdir(
 pub async fn delete_file(
     server_id: web::Path<String>,
     query: web::Query<DeleteQuery>,
-    server_configs: web::Data<Vec<GameServerConfig>>,
+    registry: web::Data<Arc<ServerRegistry>>,
 ) -> HttpResponse {
-    let base_dir = match get_base_dir(&server_id, &server_configs) {
+    let base_dir = match get_base_dir(&server_id, &registry).await {
         Ok(d) => d,
         Err(e) => return e,
     };
@@ -386,9 +431,13 @@ pub async fn delete_file(
         Err(e) => return HttpResponse::Forbidden().json(ErrorBody { error: e }),
     };
 
-    let canonical_base = PathBuf::from(&base_dir).canonicalize().unwrap_or_else(|_| PathBuf::from(&base_dir));
+    let canonical_base = PathBuf::from(&base_dir)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&base_dir));
     if target_path == canonical_base {
-        return HttpResponse::Forbidden().json(ErrorBody { error: "Cannot delete the base directory".to_string() });
+        return HttpResponse::Forbidden().json(ErrorBody {
+            error: "Cannot delete the base directory".to_string(),
+        });
     }
 
     let result = if target_path.is_dir() {

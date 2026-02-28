@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { serverApi } from '../services/api'
 import api from '../services/api'
-import { useServerStore } from '../stores/server'
+import { useRoute } from 'vue-router'
 import type { Plugin } from '../types'
 
-const serverStore = useServerStore()
+const route = useRoute()
+const serverId = computed(() => route.params.serverId as string)
+
 const tab = ref('installed')
 const loading = ref(true)
 const plugins = ref<Plugin[]>([])
@@ -23,8 +25,6 @@ const umodResults = ref<any[]>([])
 const umodLoading = ref(false)
 const installingPlugin = ref<string | null>(null)
 
-const activeServerId = computed(() => serverStore.activeServerId ?? '')
-
 const installedHeaders = [
   { title: 'Plugin', key: 'name' },
   { title: 'File', key: 'filename' },
@@ -35,10 +35,10 @@ const installedHeaders = [
 ]
 
 async function fetchPlugins() {
-  if (!activeServerId.value) return
+  if (!serverId.value) return
   loading.value = true
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     const res = await sApi.get<Plugin[]>('/plugins')
     plugins.value = res.data ?? []
   } catch { plugins.value = [] }
@@ -47,7 +47,7 @@ async function fetchPlugins() {
 
 async function openConfig(plugin: Plugin) {
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     const res = await sApi.get<{ config: any }>(`/plugins/${encodeURIComponent(plugin.name)}/config`)
     configPlugin.value = plugin
     configContent.value = typeof res.data.config === 'string' ? res.data.config : JSON.stringify(res.data.config, null, 2)
@@ -59,7 +59,7 @@ async function saveConfig() {
   if (!configPlugin.value) return
   configSaving.value = true
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     let parsed
     try { parsed = JSON.parse(configContent.value) } catch { parsed = configContent.value }
     await sApi.put(`/plugins/${encodeURIComponent(configPlugin.value.name)}/config`, parsed)
@@ -70,7 +70,7 @@ async function saveConfig() {
 
 async function reloadPlugin(plugin: Plugin) {
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     await sApi.post(`/plugins/${encodeURIComponent(plugin.name)}/reload`)
     await fetchPlugins()
   } catch { /* interceptor */ }
@@ -84,7 +84,7 @@ function confirmDelete(plugin: Plugin) {
 async function executeDelete() {
   if (!deleteTarget.value) return
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     await sApi.delete(`/plugins/${encodeURIComponent(deleteTarget.value.name)}`)
     deleteDialog.value = false
     deleteTarget.value = null
@@ -101,7 +101,7 @@ async function handleUpload(event: Event) {
   const formData = new FormData()
   formData.append('file', file)
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     await sApi.post('/plugins/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     await fetchPlugins()
   } catch { /* interceptor */ }
@@ -121,7 +121,7 @@ async function searchUMod() {
 async function installUModPlugin(plugin: any) {
   installingPlugin.value = plugin.name
   try {
-    const sApi = serverApi(activeServerId.value)
+    const sApi = serverApi(serverId.value)
     await sApi.post('/plugins/umod/install', {
       url: plugin.download_url || plugin.downloadUrl,
       filename: `${plugin.name}.cs`,
@@ -142,11 +142,6 @@ function formatDate(dateStr: string): string {
   if (!dateStr) return ''
   return new Date(dateStr).toLocaleString()
 }
-
-watch(() => serverStore.activeServerId, () => {
-  loading.value = true
-  fetchPlugins()
-})
 
 onMounted(() => { fetchPlugins() })
 </script>
